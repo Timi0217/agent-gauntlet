@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Gauntlet - Adversarial Testing for AI Agents</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    background: #0a0a0a;
+    color: #e0e0e0;
+    min-height: 100vh;
+  }
+
+  .container { max-width: 960px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+  header {
+    text-align: center;
+    padding: 3rem 0 2rem;
+    border-bottom: 1px solid #222;
+    margin-bottom: 2rem;
+  }
+  header h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #ff4444;
+    letter-spacing: -0.02em;
+  }
+  header p {
+    color: #888;
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+  }
+
+  .badge-row {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    margin-top: 1rem;
+  }
+  .badge {
+    padding: 0.25rem 0.6rem;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .badge-gold { background: #b8860b22; color: #daa520; border: 1px solid #b8860b44; }
+  .badge-silver { background: #c0c0c022; color: #c0c0c0; border: 1px solid #c0c0c044; }
+  .badge-bronze { background: #cd7f3222; color: #cd7f32; border: 1px solid #cd7f3244; }
+
+  /* ── Input Section ─────────────────────────────────── */
+  .input-section {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 6px;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+  }
+  .input-section label {
+    display: block;
+    font-size: 0.75rem;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.4rem;
+  }
+  .input-row {
+    display: flex;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+  .input-row input, .input-row select {
+    flex: 1;
+    background: #0a0a0a;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 0.6rem 0.8rem;
+    color: #e0e0e0;
+    font-family: inherit;
+    font-size: 0.85rem;
+  }
+  .input-row input:focus, .input-row select:focus {
+    outline: none;
+    border-color: #ff4444;
+  }
+  .input-row select { max-width: 160px; }
+
+  .category-toggles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1.2rem;
+  }
+  .cat-toggle {
+    padding: 0.3rem 0.7rem;
+    border: 1px solid #333;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    background: transparent;
+    color: #888;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+  .cat-toggle.active {
+    background: #ff444422;
+    border-color: #ff4444;
+    color: #ff6666;
+  }
+  .cat-toggle:hover { border-color: #555; }
+
+  .run-btn {
+    width: 100%;
+    padding: 0.7rem;
+    background: #ff4444;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    transition: background 0.15s;
+  }
+  .run-btn:hover { background: #ff5555; }
+  .run-btn:disabled { background: #333; color: #666; cursor: not-allowed; }
+
+  /* ── Status ────────────────────────────────────────── */
+  .status {
+    text-align: center;
+    padding: 1rem;
+    font-size: 0.85rem;
+    color: #888;
+    display: none;
+  }
+  .status.visible { display: block; }
+  .spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid #333;
+    border-top-color: #ff4444;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 0.5rem;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Scorecard ─────────────────────────────────────── */
+  .scorecard {
+    display: none;
+    margin-bottom: 2rem;
+  }
+  .scorecard.visible { display: block; }
+
+  .overall {
+    text-align: center;
+    padding: 2rem;
+    border: 1px solid #222;
+    border-radius: 6px;
+    background: #111;
+    margin-bottom: 1.5rem;
+  }
+  .overall-score {
+    font-size: 4rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .overall-score.gold { color: #daa520; }
+  .overall-score.silver { color: #c0c0c0; }
+  .overall-score.bronze { color: #cd7f32; }
+  .overall-score.none { color: #ff4444; }
+  .overall-label {
+    font-size: 0.75rem;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-top: 0.5rem;
+  }
+  .overall-badge {
+    display: inline-block;
+    margin-top: 0.75rem;
+    padding: 0.3rem 1rem;
+    border-radius: 3px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .overall-meta {
+    margin-top: 0.75rem;
+    font-size: 0.75rem;
+    color: #666;
+  }
+
+  /* ── Category Grid ─────────────────────────────────── */
+  .cat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+  .cat-card {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 6px;
+    padding: 1rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .cat-card:hover { border-color: #444; }
+  .cat-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+  .cat-name {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #ccc;
+  }
+  .cat-score {
+    font-size: 1.2rem;
+    font-weight: 700;
+  }
+  .cat-score.pass { color: #4ade80; }
+  .cat-score.warn { color: #fbbf24; }
+  .cat-score.fail { color: #ff4444; }
+  .cat-bar {
+    height: 4px;
+    background: #222;
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 0.5rem;
+  }
+  .cat-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.5s;
+  }
+  .cat-bar-fill.pass { background: #4ade80; }
+  .cat-bar-fill.warn { background: #fbbf24; }
+  .cat-bar-fill.fail { background: #ff4444; }
+  .cat-meta {
+    font-size: 0.7rem;
+    color: #666;
+    margin-top: 0.4rem;
+  }
+
+  /* ── Test Details ──────────────────────────────────── */
+  .test-details {
+    display: none;
+    margin-bottom: 1.5rem;
+  }
+  .test-details.visible { display: block; }
+  .test-details h3 {
+    font-size: 0.85rem;
+    color: #ccc;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #222;
+  }
+  .test-item {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 4px;
+    padding: 0.8rem;
+    margin-bottom: 0.5rem;
+  }
+  .test-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.3rem;
+  }
+  .test-name { font-size: 0.8rem; font-weight: 600; }
+  .test-result {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.4rem;
+    border-radius: 2px;
+    font-weight: 600;
+  }
+  .test-result.pass { background: #4ade8022; color: #4ade80; }
+  .test-result.fail { background: #ff444422; color: #ff4444; }
+  .test-reason {
+    font-size: 0.7rem;
+    color: #888;
+    margin-top: 0.3rem;
+  }
+  .test-preview {
+    font-size: 0.7rem;
+    color: #555;
+    margin-top: 0.3rem;
+    padding: 0.4rem;
+    background: #0a0a0a;
+    border-radius: 3px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 80px;
+    overflow-y: auto;
+  }
+
+  /* ── API Reference ─────────────────────────────────── */
+  .api-ref {
+    border-top: 1px solid #222;
+    padding-top: 2rem;
+    margin-top: 2rem;
+  }
+  .api-ref h2 {
+    font-size: 1rem;
+    color: #ccc;
+    margin-bottom: 1rem;
+  }
+  .endpoint {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 4px;
+    padding: 0.8rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.8rem;
+  }
+  .endpoint .method {
+    display: inline-block;
+    padding: 0.1rem 0.4rem;
+    border-radius: 2px;
+    font-weight: 600;
+    font-size: 0.7rem;
+    margin-right: 0.5rem;
+  }
+  .method.get { background: #4ade8022; color: #4ade80; }
+  .method.post { background: #60a5fa22; color: #60a5fa; }
+  .endpoint .path { color: #ccc; }
+  .endpoint .desc { color: #666; font-size: 0.7rem; margin-top: 0.3rem; }
+
+  footer {
+    text-align: center;
+    padding: 2rem 0;
+    color: #444;
+    font-size: 0.7rem;
+    border-top: 1px solid #1a1a1a;
+    margin-top: 2rem;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>Agent Gauntlet</h1>
+    <p>adversarial testing for AI agents &mdash; 6 categories, 29 tests, one scorecard</p>
+    <div class="badge-row">
+      <span class="badge badge-gold">90+ Gold</span>
+      <span class="badge badge-silver">70+ Silver</span>
+      <span class="badge badge-bronze">50+ Bronze</span>
+    </div>
+  </header>
+
+  <!-- Input -->
+  <div class="input-section">
+    <label>Agent Endpoint</label>
+    <div class="input-row">
+      <input type="text" id="agentUrl" placeholder="https://your-agent.com/v1/chat/completions" />
+      <select id="protocol">
+        <option value="simple">Simple</option>
+        <option value="openai">OpenAI</option>
+      </select>
+    </div>
+    <label>Categories</label>
+    <div class="category-toggles" id="catToggles"></div>
+    <button class="run-btn" id="runBtn" onclick="runGauntlet()">Run Gauntlet</button>
+  </div>
+
+  <!-- Status -->
+  <div class="status" id="status">
+    <span class="spinner"></span>
+    <span id="statusText">Running tests...</span>
+  </div>
+
+  <!-- Scorecard -->
+  <div class="scorecard" id="scorecard">
+    <div class="overall" id="overall"></div>
+    <div class="cat-grid" id="catGrid"></div>
+    <div class="test-details" id="testDetails"></div>
+  </div>
+
+  <!-- API Reference -->
+  <div class="api-ref">
+    <h2>API Reference</h2>
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/evaluate</span>
+      <div class="desc">Start async evaluation. Returns eval_id to poll for results.</div>
+    </div>
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/evaluate/sync</span>
+      <div class="desc">Run evaluation synchronously. Blocks until complete.</div>
+    </div>
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/results/{eval_id}</span>
+      <div class="desc">Get results for a specific evaluation run.</div>
+    </div>
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/categories</span>
+      <div class="desc">List all test categories and their test cases.</div>
+    </div>
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/stats</span>
+      <div class="desc">Get gauntlet usage statistics.</div>
+    </div>
+  </div>
+
+  <footer>
+    Agent Gauntlet &middot; built on Chekk &middot; adversarial testing as a service
+  </footer>
+
+</div>
+
+<script>
+const CATEGORIES = [
+  { id: 'pii_leakage', label: 'PII Leakage' },
+  { id: 'injection_resistance', label: 'Injection' },
+  { id: 'graceful_failure', label: 'Failure' },
+  { id: 'instruction_adherence', label: 'Adherence' },
+  { id: 'output_consistency', label: 'Consistency' },
+  { id: 'hallucination', label: 'Hallucination' },
+];
+
+let selectedCats = new Set(CATEGORIES.map(c => c.id));
+
+// Build category toggles
+const togglesEl = document.getElementById('catToggles');
+CATEGORIES.forEach(cat => {
+  const btn = document.createElement('button');
+  btn.className = 'cat-toggle active';
+  btn.textContent = cat.label;
+  btn.dataset.cat = cat.id;
+  btn.onclick = () => {
+    if (selectedCats.has(cat.id)) {
+      selectedCats.delete(cat.id);
+      btn.classList.remove('active');
+    } else {
+      selectedCats.add(cat.id);
+      btn.classList.add('active');
+    }
+  };
+  togglesEl.appendChild(btn);
+});
+
+async function runGauntlet() {
+  const url = document.getElementById('agentUrl').value.trim();
+  if (!url) return alert('Enter an agent endpoint URL');
+
+  const protocol = document.getElementById('protocol').value;
+  const categories = [...selectedCats];
+  if (categories.length === 0) return alert('Select at least one category');
+
+  const btn = document.getElementById('runBtn');
+  const status = document.getElementById('status');
+  const statusText = document.getElementById('statusText');
+  const scorecard = document.getElementById('scorecard');
+
+  btn.disabled = true;
+  status.classList.add('visible');
+  scorecard.classList.remove('visible');
+  statusText.textContent = 'Starting evaluation...';
+
+  try {
+    // Start async evaluation
+    const startResp = await fetch('/api/evaluate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_url: url, protocol, categories, timeout: 30 }),
+    });
+    const startData = await startResp.json();
+
+    if (!startData.eval_id) {
+      throw new Error(startData.error || 'Failed to start evaluation');
+    }
+
+    const evalId = startData.eval_id;
+    statusText.textContent = `Running ${categories.length} categories (ID: ${evalId})...`;
+
+    // Poll for results
+    let result;
+    for (let i = 0; i < 120; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const pollResp = await fetch(`/api/results/${evalId}`);
+      result = await pollResp.json();
+
+      if (result.status === 'completed') break;
+      statusText.textContent = `Running tests... (${i * 2}s elapsed)`;
+    }
+
+    if (result.status !== 'completed') {
+      throw new Error('Evaluation timed out');
+    }
+
+    renderScorecard(result);
+
+  } catch (err) {
+    alert('Error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    status.classList.remove('visible');
+  }
+}
+
+function renderScorecard(data) {
+  const sc = data.scorecard;
+  const scorecard = document.getElementById('scorecard');
+  scorecard.classList.add('visible');
+
+  // Overall score
+  const overall = document.getElementById('overall');
+  const badgeClass = sc.badge || 'none';
+  overall.innerHTML = `
+    <div class="overall-score ${badgeClass}">${sc.overall_score}</div>
+    <div class="overall-label">Overall Score</div>
+    <div class="overall-badge badge-${badgeClass}">${badgeClass === 'none' ? 'No Badge' : badgeClass + ' Badge'}</div>
+    <div class="overall-meta">
+      ${sc.total_passed} passed &middot; ${sc.total_failed} failed &middot; ${sc.total_tests} total tests
+      &middot; ${data.duration_seconds}s
+    </div>
+  `;
+
+  // Category cards
+  const grid = document.getElementById('catGrid');
+  grid.innerHTML = '';
+
+  for (const [catId, catData] of Object.entries(data.results)) {
+    const card = document.createElement('div');
+    card.className = 'cat-card';
+    const scoreClass = catData.score >= 80 ? 'pass' : catData.score >= 50 ? 'warn' : 'fail';
+    const label = catId.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+    card.innerHTML = `
+      <div class="cat-card-header">
+        <span class="cat-name">${label}</span>
+        <span class="cat-score ${scoreClass}">${catData.score}</span>
+      </div>
+      <div class="cat-bar"><div class="cat-bar-fill ${scoreClass}" style="width:${catData.score}%"></div></div>
+      <div class="cat-meta">${catData.passed}/${catData.total} passed</div>
+    `;
+
+    card.onclick = () => showTestDetails(catId, catData, label);
+    grid.appendChild(card);
+  }
+}
+
+function showTestDetails(catId, catData, label) {
+  const details = document.getElementById('testDetails');
+  details.classList.add('visible');
+
+  let html = `<h3>${label} &mdash; Test Results</h3>`;
+
+  if (catData.tests && catData.tests.length > 0) {
+    for (const t of catData.tests) {
+      const resultClass = t.passed ? 'pass' : 'fail';
+      const resultText = t.passed ? 'PASS' : 'FAIL';
+      html += `
+        <div class="test-item">
+          <div class="test-header">
+            <span class="test-name">${t.name} (${t.test_id})</span>
+            <span class="test-result ${resultClass}">${resultText} ${Math.round(t.score * 100)}%</span>
+          </div>
+          <div class="test-reason">${t.reason}</div>
+          ${t.response_preview ? `<div class="test-preview">${escapeHtml(t.response_preview)}</div>` : ''}
+        </div>
+      `;
+    }
+  } else if (catData.error) {
+    html += `<div class="test-item"><div class="test-reason">Error: ${escapeHtml(catData.error)}</div></div>`;
+  }
+
+  details.innerHTML = html;
+  details.scrollIntoView({ behavior: 'smooth' });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+</script>
+</body>
+</html>
