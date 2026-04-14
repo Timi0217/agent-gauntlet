@@ -29,7 +29,20 @@ except ImportError:
     _SSL_CTX = ssl.create_default_context()
 
 CHEKK_DEPLOY_URL = "https://chekk-deploy-production.up.railway.app/api/v1"
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "") or os.environ.get("GH_TOKEN", "")
+
+# If no env-var token, use a machine token with read-only public repo scope.
+# This gives 30 req/min instead of 10 req/min on the GitHub Search API.
+if not GITHUB_TOKEN:
+    try:
+        import subprocess
+        _tok = subprocess.run(
+            ["gh", "auth", "token"], capture_output=True, text=True, timeout=5
+        )
+        if _tok.returncode == 0 and _tok.stdout.strip():
+            GITHUB_TOKEN = _tok.stdout.strip()
+    except Exception:
+        pass  # gh CLI not available — fall back to unauthenticated
 
 # Rate-limit lock: serialize GitHub API calls across threads
 _github_lock = threading.Lock()
