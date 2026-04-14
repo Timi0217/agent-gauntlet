@@ -413,6 +413,50 @@
   }
   .fix-hint strong { color: #ccc; }
 
+  .deployed-fix {
+    background: #111;
+    border: 1px solid #4ade8044;
+    border-radius: 4px;
+    padding: 0.8rem;
+    margin-bottom: 0.5rem;
+    border-left: 3px solid #4ade80;
+  }
+  .deployed-fix.failed { border-left-color: #ff4444; border-color: #ff444444; }
+  .deployed-fix-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.3rem;
+  }
+  .deployed-fix-name {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #4ade80;
+  }
+  .deployed-fix-name a { color: #4ade80; text-decoration: none; }
+  .deployed-fix-name a:hover { text-decoration: underline; }
+  .deployed-fix-status {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 2px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .deployed-fix-status.live { background: #4ade8022; color: #4ade80; }
+  .deployed-fix-status.failed { background: #ff444422; color: #ff4444; }
+  .deployed-fix-status.deploying { background: #fbbf2422; color: #fbbf24; }
+  .deployed-fix-url {
+    font-size: 0.75rem;
+    margin-top: 0.3rem;
+  }
+  .deployed-fix-url a { color: #60a5fa; text-decoration: none; }
+  .deployed-fix-url a:hover { text-decoration: underline; }
+  .deployed-fix-tests {
+    font-size: 0.7rem;
+    color: #888;
+    margin-top: 0.2rem;
+  }
+
   footer {
     text-align: center;
     padding: 2rem 0;
@@ -688,15 +732,41 @@ function renderRemediation(rem) {
 
   let html = '';
 
+  // Show auto-deployed fixes first (the core of AgentChekkup)
+  if (rem.deployed_fixes && rem.deployed_fixes.length > 0) {
+    html += '<h3 style="font-size:0.85rem;color:#4ade80;margin-bottom:0.75rem">Auto-Deployed Fixes</h3>';
+    for (const fix of rem.deployed_fixes) {
+      const isLive = fix.status === 'live';
+      const statusClass = isLive ? 'live' : (fix.status === 'deploying' ? 'deploying' : 'failed');
+      html += `
+        <div class="deployed-fix ${isLive ? '' : 'failed'}">
+          <div class="deployed-fix-header">
+            <span class="deployed-fix-name">
+              <a href="${escapeHtml(fix.repo_url)}" target="_blank">${escapeHtml(fix.repo)}</a>
+              &mdash; ${escapeHtml(fix.fix_category.replace(/_/g, ' '))}
+            </span>
+            <span class="deployed-fix-status ${statusClass}">${fix.status}</span>
+          </div>
+          ${isLive && fix.deployed_url ? `<div class="deployed-fix-url">Live: <a href="${escapeHtml(fix.deployed_url)}" target="_blank">${escapeHtml(fix.deployed_url)}</a></div>` : ''}
+          <div class="deployed-fix-tests">Fixes: ${fix.fixes_tests ? fix.fixes_tests.join(', ') : 'N/A'}</div>
+          ${fix.integration_hint ? `<div class="test-reason" style="margin-top:0.3rem">${escapeHtml(fix.integration_hint)}</div>` : ''}
+          ${fix.error ? `<div class="test-reason" style="color:#ff6666;margin-top:0.3rem">Error: ${escapeHtml(fix.error)}</div>` : ''}
+        </div>
+      `;
+    }
+  }
+
   // Show per-failure integration hints
   if (rem.failed_tests && rem.failed_tests.length > 0) {
+    html += '<h3 style="font-size:0.85rem;color:#ccc;margin:1rem 0 0.5rem">Failure Details</h3>';
     for (const fix of rem.failed_tests) {
       html += `<div class="fix-hint"><strong>${fix.failure_type}</strong>: ${escapeHtml(fix.integration_hint)}</div>`;
     }
   }
 
-  // Show deploy-ready repos
+  // Show additional deploy-ready repos (not yet auto-deployed)
   if (rem.deploy_ready && rem.deploy_ready.length > 0) {
+    html += '<h3 style="font-size:0.85rem;color:#ccc;margin:1rem 0 0.5rem">More Recommended Repos</h3>';
     html += '<div style="margin-top:0.5rem">';
     for (const repo of rem.deploy_ready) {
       html += `
@@ -706,7 +776,6 @@ function renderRemediation(rem) {
             <div class="repo-desc">${escapeHtml(repo.description || 'No description')}</div>
             <div class="repo-stars">${repo.stars.toLocaleString()} stars</div>
           </div>
-          <button class="deploy-btn" onclick="deployRepo('${escapeHtml(repo.url)}')">Deploy on Chekk</button>
         </div>
       `;
     }
@@ -714,25 +783,6 @@ function renderRemediation(rem) {
   }
 
   content.innerHTML = html;
-}
-
-async function deployRepo(repoUrl) {
-  if (!confirm('Deploy ' + repoUrl + ' on Chekk?')) return;
-  try {
-    const resp = await fetch('https://chekk-deploy-production.up.railway.app/api/v1/deploy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ github_url: repoUrl }),
-    });
-    const data = await resp.json();
-    if (data.id) {
-      alert('Deploy started! ID: ' + data.id + '\nCheck status at: /api/v1/deploy/' + data.id);
-    } else {
-      alert('Deploy response: ' + JSON.stringify(data));
-    }
-  } catch (err) {
-    alert('Deploy failed: ' + err.message);
-  }
 }
 
 function escapeHtml(str) {

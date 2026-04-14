@@ -12,6 +12,7 @@ receives the fix ready to use — no human decision, no manual step.
 
 import ssl
 import json
+import time
 import urllib.request
 from typing import Optional
 
@@ -20,6 +21,8 @@ try:
     _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 except ImportError:
     _SSL_CTX = ssl.create_default_context()
+
+CHEKK_DEPLOY_URL = "https://chekk-deploy-production.up.railway.app/api/v1"
 
 
 # ── Failure → Search Mapping ────────────────────────────────────────
@@ -606,8 +609,183 @@ def get_remediation_for_evaluation(scored_results: dict) -> dict:
             "url": repo.get("url", ""),
             "stars": repo.get("stars", 0),
             "description": repo.get("description", ""),
-            "deploy_url": f"https://chekk-deploy-production.up.railway.app/api/v1/deploy",
+            "deploy_url": f"{CHEKK_DEPLOY_URL}/deploy",
             "deploy_body": {"github_url": repo.get("url", "")},
         })
 
+    return remediation
+
+
+# ── Auto-Deploy Loop ──────────────────────────────────────────────────
+# The core of AgentChekkup: diagnose → find → deploy → manifest.
+# No human decision. No manual step. Chekk deploys the fix and hands
+# back the manifest. The agent receives the fix ready to use.
+
+
+def _deploy_on_chekk(github_url: str) -> Optional[dict]:
+    """Deploy a GitHub repo on Chekk. Returns deployment info or None."""
+    body = json.dumps({"github_url": github_url}).encode()
+    req = urllib.request.Request(
+        f"{CHEKK_DEPLOY_URL}/deploy",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=30, context=_SSL_CTX)
+        return json.loads(resp.read())
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _poll_deploy_status(deploy_id: str, max_wait: int = 120) -> Optional[dict]:
+    """Poll Chekk until the deployment is live or fails."""
+    url = f"{CHEKK_DEPLOY_URL}/deploy/{deploy_id}"
+    deadline = time.time() + max_wait
+
+    while time.time() < deadline:
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            resp = urllib.request.urlopen(req, timeout=10, context=_SSL_CTX)
+            data = json.loads(resp.read())
+            status = data.get("status", "")
+
+            if status == "live":
+                return data
+            elif status in ("failed", "error", "cancelled"):
+                return data
+
+            time.sleep(5)
+        except Exception:
+            time.sleep(5)
+
+    return None
+
+
+def _get_manifest(deployed_url: str) -> Optional[dict]:
+    """Fetch the agent manifest (.well-known/agent.json) from a deployed service."""
+    manifest_url = f"{deployed_url.rstrip('/')}/.well-known/agent.json"
+    try:
+        req = urllib.request.Request(manifest_url, headers={"Accept": "application/json"})
+        resp = urllib.request.urlopen(req, timeout=10, context=_SSL_CTX)
+        return json.loads(resp.read())
+    except Exception:
+        # Try llms.txt as fallback
+        try:
+            llms_url = f"{deployed_url.rstrip('/')}/llms.txt"
+            req = urllib.request.Request(llms_url)
+            resp = urllib.request.urlopen(req, timeout=10, context=_SSL_CTX)
+            return {"llms_txt": resp.read().decode("utf-8", errors="replace")}
+        except Exception:
+            return None
+
+
+def auto_deploy_fixes(remediation: dict) -> dict:
+    """Auto-deploy the top fix for each failure category on Chekk.
+
+    Takes a remediation dict (from get_remediation_for_evaluation) and:
+    1. Groups recommended repos by fix_category
+    2. Picks the highest-starred repo per category
+    3. Deploys it on Chekk
+    4. Polls until live
+    5. Fetches the manifest
+    6. Returns the remediation dict enriched with deployed_fixes
+
+    The agent being tested receives the fix ready to use.
+    """
+    deployed_fixes = []
+    already_deployed = set()  # avoid deploying the same repo twice
+
+    # Collect the best repo per fix_category from failed tests
+    best_per_category = {}
+    for test_rem in remediation.get("failed_tests", []):
+        fix_cat = test_rem.get("fix_category", "unknown")
+        repos = test_rem.get("recommended_repos", [])
+        if not repos:
+            continue
+
+        top_repo = repos[0]  # already sorted by stars
+        repo_name = top_repo.get("full_name", "")
+
+        if fix_cat not in best_per_category:
+            best_per_category[fix_cat] = {
+                "repo": top_repo,
+                "test_ids": [test_rem["test_id"]],
+                "failure_type": test_rem.get("failure_type", ""),
+                "integration_hint": test_rem.get("integration_hint", ""),
+            }
+        else:
+            best_per_category[fix_cat]["test_ids"].append(test_rem["test_id"])
+            # Keep the higher-starred repo
+            existing = best_per_category[fix_cat]["repo"]
+            if top_repo.get("stars", 0) > existing.get("stars", 0):
+                best_per_category[fix_cat]["repo"] = top_repo
+
+    # Deploy each unique fix
+    for fix_cat, info in best_per_category.items():
+        repo = info["repo"]
+        repo_url = repo.get("url", "")
+        repo_name = repo.get("full_name", "")
+
+        if not repo_url or repo_name in already_deployed:
+            continue
+        already_deployed.add(repo_name)
+
+        fix_entry = {
+            "fix_category": fix_cat,
+            "repo": repo_name,
+            "repo_url": repo_url,
+            "stars": repo.get("stars", 0),
+            "fixes_tests": info["test_ids"],
+            "integration_hint": info["integration_hint"],
+            "status": "deploying",
+            "deployed_url": None,
+            "manifest": None,
+        }
+
+        # Deploy on Chekk
+        deploy_result = _deploy_on_chekk(repo_url)
+
+        if not deploy_result or "error" in deploy_result:
+            fix_entry["status"] = "deploy_failed"
+            fix_entry["error"] = deploy_result.get("error", "Unknown deploy error") if deploy_result else "No response"
+            deployed_fixes.append(fix_entry)
+            continue
+
+        deploy_id = deploy_result.get("id")
+        if not deploy_id:
+            fix_entry["status"] = "deploy_failed"
+            fix_entry["error"] = "No deployment ID returned"
+            deployed_fixes.append(fix_entry)
+            continue
+
+        fix_entry["deploy_id"] = deploy_id
+
+        # Poll until live (max 2 min per deploy)
+        final = _poll_deploy_status(deploy_id, max_wait=120)
+
+        if not final:
+            fix_entry["status"] = "timeout"
+            deployed_fixes.append(fix_entry)
+            continue
+
+        final_status = final.get("status", "")
+        deployed_url = final.get("deployed_url")
+
+        if final_status == "live" and deployed_url:
+            fix_entry["status"] = "live"
+            fix_entry["deployed_url"] = deployed_url
+
+            # Fetch the manifest
+            manifest = _get_manifest(deployed_url)
+            if manifest:
+                fix_entry["manifest"] = manifest
+
+            deployed_fixes.append(fix_entry)
+        else:
+            fix_entry["status"] = final_status or "failed"
+            fix_entry["error"] = final.get("error_message", "")
+            deployed_fixes.append(fix_entry)
+
+    remediation["deployed_fixes"] = deployed_fixes
     return remediation

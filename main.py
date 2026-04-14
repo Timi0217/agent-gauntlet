@@ -31,6 +31,7 @@ from remediation import (
     get_remediation_for_test,
     get_remediation_for_category,
     get_remediation_for_evaluation,
+    auto_deploy_fixes,
 )
 
 app = FastAPI(
@@ -409,4 +410,10 @@ async def _run_evaluation(
 
     # Attach remediation if requested and there are failures
     if include_remediation and total_failed > 0:
-        evaluation["remediation"] = get_remediation_for_evaluation(all_scored)
+        remediation = get_remediation_for_evaluation(all_scored)
+
+        # Auto-deploy: Chekk deploys the best fix per category automatically
+        # and hands back the manifest. No human decision, no manual step.
+        remediation = auto_deploy_fixes(remediation)
+
+        evaluation["remediation"] = remediation
