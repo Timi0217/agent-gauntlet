@@ -12,9 +12,13 @@ receives the fix ready to use — no human decision, no manual step.
 
 import ssl
 import json
+import logging
+import threading
 import time
 import urllib.request
-from typing import Optional
+from typing import Callable, Optional
+
+log = logging.getLogger(__name__)
 
 try:
     import certifi
@@ -954,8 +958,12 @@ def _deploy_on_chekk(github_url: str) -> Optional[dict]:
         return {"error": str(e)}
 
 
-def _poll_deploy_status(deploy_id: str, max_wait: int = 120) -> Optional[dict]:
-    """Poll Chekk until the deployment is live or fails."""
+def _poll_deploy_status(deploy_id: str, max_wait: int = 300) -> Optional[dict]:
+    """Poll Chekk until the deployment is live or fails.
+
+    Default timeout raised to 300s (5 min) to accommodate third-party
+    repos that take longer to build.
+    """
     url = f"{CHEKK_DEPLOY_URL}/deploy/{deploy_id}"
     deadline = time.time() + max_wait
 
@@ -996,23 +1004,8 @@ def _get_manifest(deployed_url: str) -> Optional[dict]:
             return None
 
 
-def auto_deploy_fixes(remediation: dict) -> dict:
-    """Auto-deploy the top fix for each failure category on Chekk.
-
-    Takes a remediation dict (from get_remediation_for_evaluation) and:
-    1. Groups recommended repos by fix_category
-    2. Picks the highest-starred repo per category
-    3. Deploys it on Chekk
-    4. Polls until live
-    5. Fetches the manifest
-    6. Returns the remediation dict enriched with deployed_fixes
-
-    The agent being tested receives the fix ready to use.
-    """
-    deployed_fixes = []
-    already_deployed = set()  # avoid deploying the same repo twice
-
-    # Collect the best repo per fix_category from failed tests
+def _collect_best_per_category(remediation: dict) -> dict:
+    """Group recommended repos by fix_category and pick the best for each."""
     best_per_category = {}
     for test_rem in remediation.get("failed_tests", []):
         fix_cat = test_rem.get("fix_category", "unknown")
@@ -1021,7 +1014,6 @@ def auto_deploy_fixes(remediation: dict) -> dict:
             continue
 
         top_repo = repos[0]  # already sorted by stars
-        repo_name = top_repo.get("full_name", "")
 
         if fix_cat not in best_per_category:
             best_per_category[fix_cat] = {
@@ -1032,12 +1024,99 @@ def auto_deploy_fixes(remediation: dict) -> dict:
             }
         else:
             best_per_category[fix_cat]["test_ids"].append(test_rem["test_id"])
-            # Keep the higher-starred repo
             existing = best_per_category[fix_cat]["repo"]
             if top_repo.get("stars", 0) > existing.get("stars", 0):
                 best_per_category[fix_cat]["repo"] = top_repo
 
-    # Deploy each unique fix
+    return best_per_category
+
+
+def _deploy_single_fix(
+    fix_entry: dict,
+    fix_cat: str,
+    on_complete: Optional[Callable] = None,
+):
+    """Deploy a single fix on Chekk, poll until live, fetch manifest.
+
+    Designed to run in a background thread. Mutates fix_entry in-place
+    and calls on_complete(fix_entry) when done so the caller can persist.
+    """
+    repo_url = fix_entry["repo_url"]
+
+    # Deploy on Chekk
+    deploy_result = _deploy_on_chekk(repo_url)
+
+    if not deploy_result or "error" in deploy_result:
+        fix_entry["status"] = "deploy_failed"
+        fix_entry["error"] = (
+            deploy_result.get("error", "Unknown deploy error")
+            if deploy_result else "No response"
+        )
+        if on_complete:
+            on_complete(fix_entry)
+        return
+
+    deploy_id = deploy_result.get("id")
+    if not deploy_id:
+        fix_entry["status"] = "deploy_failed"
+        fix_entry["error"] = "No deployment ID returned"
+        if on_complete:
+            on_complete(fix_entry)
+        return
+
+    fix_entry["deploy_id"] = deploy_id
+
+    # Poll until live — 300s (5 min) to handle slow builds
+    final = _poll_deploy_status(deploy_id, max_wait=300)
+
+    if not final:
+        fix_entry["status"] = "timeout"
+        if on_complete:
+            on_complete(fix_entry)
+        return
+
+    final_status = final.get("status", "")
+    deployed_url = final.get("deployed_url")
+
+    if final_status == "live" and deployed_url:
+        fix_entry["status"] = "live"
+        fix_entry["deployed_url"] = deployed_url
+
+        manifest = _get_manifest(deployed_url)
+        if manifest:
+            fix_entry["manifest"] = manifest
+
+        fix_entry["prescription"] = generate_prescription(fix_cat, deployed_url)
+    else:
+        fix_entry["status"] = final_status or "failed"
+        fix_entry["error"] = final.get("error_message", "")
+
+    if on_complete:
+        on_complete(fix_entry)
+
+
+def auto_deploy_fixes(
+    remediation: dict,
+    on_fix_complete: Optional[Callable] = None,
+    background: bool = True,
+) -> dict:
+    """Auto-deploy the top fix for each failure category on Chekk.
+
+    When background=True (default), kicks off deploys in daemon threads
+    and returns immediately with status="deploying" for each fix. The
+    evaluation result is returned to the user fast; the UI polls for
+    fix status updates.
+
+    When background=False, blocks until all deploys finish (legacy
+    behavior for sync callers that want everything in one shot).
+
+    on_fix_complete is called per-fix when it finishes (live/failed/timeout).
+    Use this to persist intermediate results to SQLite.
+    """
+    already_deployed = set()
+    best_per_category = _collect_best_per_category(remediation)
+    deployed_fixes = []
+
     for fix_cat, info in best_per_category.items():
         repo = info["repo"]
         repo_url = repo.get("url", "")
@@ -1058,53 +1137,18 @@ def auto_deploy_fixes(remediation: dict) -> dict:
             "deployed_url": None,
             "manifest": None,
         }
+        deployed_fixes.append(fix_entry)
 
-        # Deploy on Chekk
-        deploy_result = _deploy_on_chekk(repo_url)
-
-        if not deploy_result or "error" in deploy_result:
-            fix_entry["status"] = "deploy_failed"
-            fix_entry["error"] = deploy_result.get("error", "Unknown deploy error") if deploy_result else "No response"
-            deployed_fixes.append(fix_entry)
-            continue
-
-        deploy_id = deploy_result.get("id")
-        if not deploy_id:
-            fix_entry["status"] = "deploy_failed"
-            fix_entry["error"] = "No deployment ID returned"
-            deployed_fixes.append(fix_entry)
-            continue
-
-        fix_entry["deploy_id"] = deploy_id
-
-        # Poll until live (max 2 min per deploy)
-        final = _poll_deploy_status(deploy_id, max_wait=120)
-
-        if not final:
-            fix_entry["status"] = "timeout"
-            deployed_fixes.append(fix_entry)
-            continue
-
-        final_status = final.get("status", "")
-        deployed_url = final.get("deployed_url")
-
-        if final_status == "live" and deployed_url:
-            fix_entry["status"] = "live"
-            fix_entry["deployed_url"] = deployed_url
-
-            # Fetch the manifest
-            manifest = _get_manifest(deployed_url)
-            if manifest:
-                fix_entry["manifest"] = manifest
-
-            # Generate prescription — actionable instructions for permanent use
-            fix_entry["prescription"] = generate_prescription(fix_cat, deployed_url)
-
-            deployed_fixes.append(fix_entry)
+        if background:
+            t = threading.Thread(
+                target=_deploy_single_fix,
+                args=(fix_entry, fix_cat, on_fix_complete),
+                daemon=True,
+            )
+            t.start()
+            log.info("Background deploy started for %s (%s)", repo_name, fix_cat)
         else:
-            fix_entry["status"] = final_status or "failed"
-            fix_entry["error"] = final.get("error_message", "")
-            deployed_fixes.append(fix_entry)
+            _deploy_single_fix(fix_entry, fix_cat, on_fix_complete)
 
     remediation["deployed_fixes"] = deployed_fixes
     return remediation

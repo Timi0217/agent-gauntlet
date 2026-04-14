@@ -14,6 +14,7 @@ Deploy via Chekk:
 """
 
 import asyncio
+import logging
 import time
 import uuid
 from typing import Optional
@@ -33,11 +34,15 @@ from remediation import (
     get_remediation_for_evaluation,
     auto_deploy_fixes,
 )
+from db import init_db, save_evaluation, load_evaluation, list_evaluations, update_evaluation_fixes
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AgentChekkup",
     description="Adversarial testing for AI agents",
-    version="1.0.0",
+    version="1.1.0",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -46,9 +51,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── In-memory store for evaluation results ──────────────────────────
+# ── In-memory cache + SQLite persistence ──────────────────────────
+# Hot evaluations live in memory for fast polling during an active run.
+# Everything is also persisted to SQLite so results survive restarts.
 evaluations: dict[str, dict] = {}
 call_count = 0
+
+
+@app.on_event("startup")
+def startup():
+    init_db()
+    log.info("SQLite database initialized")
 
 
 # ── Models ──────────────────────────────────────────────────────────
@@ -149,7 +162,7 @@ async def evaluate(req: EvaluateRequest, background_tasks: BackgroundTasks):
                      "valid": list(ALL_CATEGORIES.keys())},
         )
 
-    evaluations[eval_id] = {
+    evaluation = {
         "eval_id": eval_id,
         "agent_url": req.agent_url,
         "protocol": req.protocol,
@@ -159,6 +172,8 @@ async def evaluate(req: EvaluateRequest, background_tasks: BackgroundTasks):
         "results": {},
         "scorecard": {},
     }
+    evaluations[eval_id] = evaluation
+    save_evaluation(evaluation)
 
     # Run evaluation in background
     background_tasks.add_task(
@@ -195,7 +210,7 @@ async def evaluate_sync(req: EvaluateRequest):
                      "valid": list(ALL_CATEGORIES.keys())},
         )
 
-    evaluations[eval_id] = {
+    evaluation = {
         "eval_id": eval_id,
         "agent_url": req.agent_url,
         "protocol": req.protocol,
@@ -205,6 +220,8 @@ async def evaluate_sync(req: EvaluateRequest):
         "results": {},
         "scorecard": {},
     }
+    evaluations[eval_id] = evaluation
+    save_evaluation(evaluation)
 
     await _run_evaluation(
         eval_id, req.agent_url, req.protocol, cats, req.timeout,
@@ -216,10 +233,43 @@ async def evaluate_sync(req: EvaluateRequest):
 
 @app.get("/api/results/{eval_id}")
 def get_results(eval_id: str):
-    """Get evaluation results by ID."""
-    if eval_id not in evaluations:
+    """Get evaluation results by ID.
+
+    Checks in-memory cache first, falls back to SQLite for historical results.
+    """
+    # In-memory first (hot / currently running)
+    if eval_id in evaluations:
+        return evaluations[eval_id]
+
+    # Fall back to SQLite (historical)
+    stored = load_evaluation(eval_id)
+    if stored:
+        return stored
+
+    return JSONResponse(status_code=404, content={"error": "Evaluation not found"})
+
+
+@app.get("/api/results/{eval_id}/fixes")
+def get_fix_status(eval_id: str):
+    """Poll the status of background fix deployments for an evaluation.
+
+    Returns just the deployed_fixes array and an overall deploying flag.
+    The UI polls this endpoint every few seconds after evaluation completes
+    to watch fixes go from 'deploying' -> 'live' or 'failed'.
+    """
+    evaluation = evaluations.get(eval_id) or load_evaluation(eval_id)
+    if not evaluation:
         return JSONResponse(status_code=404, content={"error": "Evaluation not found"})
-    return evaluations[eval_id]
+
+    remediation = evaluation.get("remediation", {})
+    fixes = remediation.get("deployed_fixes", [])
+    still_deploying = any(f.get("status") == "deploying" for f in fixes)
+
+    return {
+        "eval_id": eval_id,
+        "deployed_fixes": fixes,
+        "still_deploying": still_deploying,
+    }
 
 
 @app.post("/api/remediate")
@@ -278,10 +328,10 @@ def get_eval_remediation(eval_id: str):
     Searches GitHub for proven repos that fix each failed test.
     Only works for completed evaluations.
     """
-    if eval_id not in evaluations:
+    evaluation = evaluations.get(eval_id) or load_evaluation(eval_id)
+    if not evaluation:
         return JSONResponse(status_code=404, content={"error": "Evaluation not found"})
 
-    evaluation = evaluations[eval_id]
     if evaluation["status"] != "completed":
         return JSONResponse(
             status_code=400,
@@ -292,31 +342,33 @@ def get_eval_remediation(eval_id: str):
 
 
 @app.get("/api/results")
-def list_results(limit: int = 20):
-    """List recent evaluation results."""
-    sorted_evals = sorted(
-        evaluations.values(),
-        key=lambda e: e.get("started_at", 0),
-        reverse=True,
-    )[:limit]
-
-    return {
-        "evaluations": [
-            {
-                "eval_id": e["eval_id"],
-                "agent_url": e["agent_url"],
-                "status": e["status"],
-                "overall_score": e.get("scorecard", {}).get("overall_score"),
-                "badge": e.get("scorecard", {}).get("badge"),
-                "started_at": e.get("started_at"),
-                "duration_seconds": e.get("duration_seconds"),
-            }
-            for e in sorted_evals
-        ]
-    }
+def list_results(limit: int = 50):
+    """List recent evaluation results from SQLite (persistent history)."""
+    return {"evaluations": list_evaluations(limit=limit)}
 
 
 # ── Background evaluation logic ────────────────────────────────────
+
+def _make_fix_callback(eval_id: str):
+    """Create a callback that persists fix updates to both memory and SQLite.
+
+    Called by the background deploy thread each time a fix finishes
+    (live, failed, or timeout). Ensures the latest state is always
+    available via the /api/results/{eval_id}/fixes polling endpoint.
+    """
+    def callback(fix_entry: dict):
+        evaluation = evaluations.get(eval_id)
+        if evaluation:
+            save_evaluation(evaluation)
+            log.info(
+                "Fix %s for eval %s: status=%s url=%s",
+                fix_entry.get("repo"),
+                eval_id,
+                fix_entry.get("status"),
+                fix_entry.get("deployed_url"),
+            )
+    return callback
+
 
 async def _run_evaluation(
     eval_id: str,
@@ -408,12 +460,21 @@ async def _run_evaluation(
     }
     evaluation["duration_seconds"] = round(time.time() - evaluation["started_at"], 1)
 
+    # Persist the completed evaluation before starting deploys
+    save_evaluation(evaluation)
+
     # Attach remediation if requested and there are failures
     if include_remediation and total_failed > 0:
         remediation = get_remediation_for_evaluation(all_scored)
 
-        # Auto-deploy: Chekk deploys the best fix per category automatically
-        # and hands back the manifest. No human decision, no manual step.
-        remediation = auto_deploy_fixes(remediation)
+        # Auto-deploy in background threads (default). The evaluation
+        # result is returned immediately; fixes update asynchronously.
+        # The on_fix_complete callback persists each fix as it lands.
+        remediation = auto_deploy_fixes(
+            remediation,
+            on_fix_complete=_make_fix_callback(eval_id),
+            background=True,
+        )
 
         evaluation["remediation"] = remediation
+        save_evaluation(evaluation)

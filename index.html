@@ -150,6 +150,80 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* ── Past Results ───────────────────────────────────── */
+  .past-results {
+    margin-bottom: 2rem;
+  }
+  .past-results h2 {
+    font-size: 1rem;
+    color: #ccc;
+    margin-bottom: 0.75rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .past-results .count {
+    font-size: 0.7rem;
+    color: #666;
+    font-weight: 400;
+  }
+  .past-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.75rem;
+  }
+  .past-table th {
+    text-align: left;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.65rem;
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid #222;
+  }
+  .past-table td {
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid #1a1a1a;
+    color: #aaa;
+  }
+  .past-table tr { cursor: pointer; transition: background 0.1s; }
+  .past-table tr:hover { background: #111; }
+  .past-table .score-cell {
+    font-weight: 700;
+    text-align: center;
+  }
+  .past-table .score-cell.pass { color: #4ade80; }
+  .past-table .score-cell.warn { color: #fbbf24; }
+  .past-table .score-cell.fail { color: #ff4444; }
+  .past-badge {
+    display: inline-block;
+    padding: 0.1rem 0.4rem;
+    border-radius: 2px;
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .past-badge.gold { background: #b8860b22; color: #daa520; }
+  .past-badge.silver { background: #c0c0c022; color: #c0c0c0; }
+  .past-badge.bronze { background: #cd7f3222; color: #cd7f32; }
+  .past-badge.none { background: #ff444422; color: #ff4444; }
+  .past-badge.running { background: #60a5fa22; color: #60a5fa; }
+  .agent-url-cell {
+    max-width: 300px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .no-history {
+    text-align: center;
+    padding: 1.5rem;
+    color: #444;
+    font-size: 0.8rem;
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 6px;
+  }
+
   /* ── Scorecard ─────────────────────────────────────── */
   .scorecard {
     display: none;
@@ -422,6 +496,7 @@
     border-left: 3px solid #4ade80;
   }
   .deployed-fix.failed { border-left-color: #ff4444; border-color: #ff444444; }
+  .deployed-fix.deploying { border-left-color: #fbbf24; border-color: #fbbf2444; }
   .deployed-fix-header {
     display: flex;
     justify-content: space-between;
@@ -443,7 +518,9 @@
     text-transform: uppercase;
   }
   .deployed-fix-status.live { background: #4ade8022; color: #4ade80; }
-  .deployed-fix-status.failed { background: #ff444422; color: #ff4444; }
+  .deployed-fix-status.failed,
+  .deployed-fix-status.deploy_failed,
+  .deployed-fix-status.timeout { background: #ff444422; color: #ff4444; }
   .deployed-fix-status.deploying { background: #fbbf2422; color: #fbbf24; }
   .deployed-fix-url {
     font-size: 0.75rem;
@@ -535,6 +612,21 @@
   }
   .copy-btn:hover { background: #a78bfa33; }
 
+  /* ── Deploying spinner ──────────────────────────────── */
+  .deploying-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.7rem;
+    color: #fbbf24;
+    margin-top: 0.3rem;
+  }
+  .deploying-indicator .spinner {
+    width: 10px; height: 10px;
+    border-width: 1.5px;
+    border-top-color: #fbbf24;
+  }
+
   footer {
     text-align: center;
     padding: 2rem 0;
@@ -571,6 +663,12 @@
     <label>Categories</label>
     <div class="category-toggles" id="catToggles"></div>
     <button class="run-btn" id="runBtn" onclick="runGauntlet()">Run Gauntlet</button>
+  </div>
+
+  <!-- Past Results -->
+  <div class="past-results" id="pastResults">
+    <h2>Past Results <span class="count" id="pastCount"></span></h2>
+    <div id="pastContent"></div>
   </div>
 
   <!-- Status -->
@@ -618,7 +716,12 @@
     <div class="endpoint">
       <span class="method get">GET</span>
       <span class="path">/api/results</span>
-      <div class="desc">List recent evaluation results. Query: ?limit=20. Returns eval_id, score, badge, duration for each.</div>
+      <div class="desc">List recent evaluations from persistent history. Query: ?limit=50.</div>
+    </div>
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/results/{eval_id}/fixes</span>
+      <div class="desc">Poll fix deployment status. Returns deployed_fixes array and still_deploying flag for live progress tracking.</div>
     </div>
 
     <div style="font-size:0.7rem;color:#666;text-transform:uppercase;letter-spacing:0.05em;margin:1rem 0 0.5rem;font-weight:600">Remediation</div>
@@ -668,6 +771,8 @@ const CATEGORIES = [
 ];
 
 let selectedCats = new Set(CATEGORIES.map(c => c.id));
+let currentEvalId = null; // Track current eval for fix polling
+let fixPollInterval = null;
 
 // Build category toggles
 const togglesEl = document.getElementById('catToggles');
@@ -688,6 +793,89 @@ CATEGORIES.forEach(cat => {
   togglesEl.appendChild(btn);
 });
 
+// ── Past Results ──────────────────────────────────────────────────
+
+async function loadPastResults() {
+  try {
+    const resp = await fetch('/api/results?limit=50');
+    const data = await resp.json();
+    renderPastResults(data.evaluations || []);
+  } catch (e) {
+    // Silently fail — past results are optional
+  }
+}
+
+function renderPastResults(evals) {
+  const container = document.getElementById('pastContent');
+  const countEl = document.getElementById('pastCount');
+
+  if (!evals || evals.length === 0) {
+    countEl.textContent = '';
+    container.innerHTML = '<div class="no-history">No evaluations yet. Run the gauntlet to get started.</div>';
+    return;
+  }
+
+  countEl.textContent = `(${evals.length})`;
+
+  let html = '<table class="past-table"><thead><tr>';
+  html += '<th>Agent</th><th>Score</th><th>Badge</th><th>Tests</th><th>Duration</th><th>Date</th>';
+  html += '</tr></thead><tbody>';
+
+  for (const e of evals) {
+    const scoreClass = e.status !== 'completed' ? '' :
+      (e.overall_score >= 80 ? 'pass' : e.overall_score >= 50 ? 'warn' : 'fail');
+
+    const agentShort = (e.agent_url || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+    const badgeClass = e.status !== 'completed' ? 'running' : (e.badge || 'none');
+    const badgeLabel = e.status !== 'completed' ? e.status : (e.badge === 'none' ? '--' : e.badge || '--');
+
+    const passedStr = e.total_passed != null ? `${e.total_passed}/${e.total_tests}` : '--';
+    const durationStr = e.duration_seconds != null ? `${e.duration_seconds}s` : '--';
+
+    const dateStr = e.started_at
+      ? new Date(e.started_at * 1000).toLocaleString(undefined, {
+          month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+        })
+      : '--';
+
+    html += `<tr onclick="loadEvaluation('${escapeHtml(e.eval_id)}')">`;
+    html += `<td class="agent-url-cell" title="${escapeHtml(e.agent_url || '')}">${escapeHtml(agentShort)}</td>`;
+    html += `<td class="score-cell ${scoreClass}">${e.status === 'completed' ? e.overall_score : '--'}</td>`;
+    html += `<td><span class="past-badge ${badgeClass}">${badgeLabel}</span></td>`;
+    html += `<td>${passedStr}</td>`;
+    html += `<td>${durationStr}</td>`;
+    html += `<td>${dateStr}</td>`;
+    html += '</tr>';
+  }
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+async function loadEvaluation(evalId) {
+  try {
+    const resp = await fetch(`/api/results/${evalId}`);
+    if (!resp.ok) return;
+    const result = await resp.json();
+
+    if (result.status === 'completed') {
+      renderScorecard(result);
+      if (result.remediation) {
+        renderRemediation(result.remediation);
+        startFixPolling(evalId);
+      }
+    }
+
+    // Scroll to scorecard
+    document.getElementById('scorecard').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    // Silently fail
+  }
+}
+
+// ── Run Gauntlet ──────────────────────────────────────────────────
+
 async function runGauntlet() {
   const url = document.getElementById('agentUrl').value.trim();
   if (!url) return alert('Enter an agent endpoint URL');
@@ -704,7 +892,11 @@ async function runGauntlet() {
   btn.disabled = true;
   status.classList.add('visible');
   scorecard.classList.remove('visible');
+  document.getElementById('remediation').classList.remove('visible');
   statusText.textContent = 'Starting evaluation...';
+
+  // Stop any existing fix polling
+  stopFixPolling();
 
   try {
     // Start async evaluation
@@ -720,6 +912,7 @@ async function runGauntlet() {
     }
 
     const evalId = startData.eval_id;
+    currentEvalId = evalId;
     statusText.textContent = `Running ${categories.length} categories (ID: ${evalId})...`;
 
     // Poll for results
@@ -740,7 +933,12 @@ async function runGauntlet() {
     renderScorecard(result);
     if (result.remediation) {
       renderRemediation(result.remediation);
+      // Start polling for fix deployments
+      startFixPolling(evalId);
     }
+
+    // Refresh past results table
+    loadPastResults();
 
   } catch (err) {
     alert('Error: ' + err.message);
@@ -749,6 +947,53 @@ async function runGauntlet() {
     status.classList.remove('visible');
   }
 }
+
+// ── Fix Deployment Polling ─────────────────────────────────────────
+
+function startFixPolling(evalId) {
+  stopFixPolling();
+  currentEvalId = evalId;
+
+  fixPollInterval = setInterval(async () => {
+    try {
+      const resp = await fetch(`/api/results/${evalId}/fixes`);
+      if (!resp.ok) { stopFixPolling(); return; }
+      const data = await resp.json();
+
+      // Update the remediation UI with latest fix statuses
+      updateFixStatuses(data.deployed_fixes || []);
+
+      if (!data.still_deploying) {
+        stopFixPolling();
+        // Refresh past results to show final state
+        loadPastResults();
+      }
+    } catch (e) {
+      stopFixPolling();
+    }
+  }, 5000); // Poll every 5 seconds
+}
+
+function stopFixPolling() {
+  if (fixPollInterval) {
+    clearInterval(fixPollInterval);
+    fixPollInterval = null;
+  }
+}
+
+function updateFixStatuses(fixes) {
+  // Re-render the deployed fixes section with latest data
+  const fixesContainer = document.getElementById('deployedFixesContainer');
+  if (!fixesContainer) return;
+
+  let html = '';
+  for (const fix of fixes) {
+    html += renderDeployedFix(fix);
+  }
+  fixesContainer.innerHTML = html;
+}
+
+// ── Render Functions ───────────────────────────────────────────────
 
 function renderScorecard(data) {
   const sc = data.scorecard;
@@ -765,6 +1010,7 @@ function renderScorecard(data) {
     <div class="overall-meta">
       ${sc.total_passed} passed &middot; ${sc.total_failed} failed &middot; ${sc.total_tests} total tests
       &middot; ${data.duration_seconds}s
+      ${data.agent_url ? `&middot; <span style="color:#555">${escapeHtml(data.agent_url.replace(/^https?:\/\//, '').replace(/\/$/, ''))}</span>` : ''}
     </div>
   `;
 
@@ -830,27 +1076,17 @@ function renderRemediation(rem) {
 
   // Show auto-deployed fixes first (the core of AgentChekkup)
   if (rem.deployed_fixes && rem.deployed_fixes.length > 0) {
-    html += '<h3 style="font-size:0.85rem;color:#4ade80;margin-bottom:0.75rem">Auto-Deployed Fixes</h3>';
-    for (const fix of rem.deployed_fixes) {
-      const isLive = fix.status === 'live';
-      const statusClass = isLive ? 'live' : (fix.status === 'deploying' ? 'deploying' : 'failed');
-      html += `
-        <div class="deployed-fix ${isLive ? '' : 'failed'}">
-          <div class="deployed-fix-header">
-            <span class="deployed-fix-name">
-              <a href="${escapeHtml(fix.repo_url)}" target="_blank">${escapeHtml(fix.repo)}</a>
-              &mdash; ${escapeHtml(fix.fix_category.replace(/_/g, ' '))}
-            </span>
-            <span class="deployed-fix-status ${statusClass}">${fix.status}</span>
-          </div>
-          ${isLive && fix.deployed_url ? `<div class="deployed-fix-url">Live: <a href="${escapeHtml(fix.deployed_url)}" target="_blank">${escapeHtml(fix.deployed_url)}</a></div>` : ''}
-          <div class="deployed-fix-tests">Fixes: ${fix.fixes_tests ? fix.fixes_tests.join(', ') : 'N/A'}</div>
-          ${fix.integration_hint ? `<div class="test-reason" style="margin-top:0.3rem">${escapeHtml(fix.integration_hint)}</div>` : ''}
-          ${fix.error ? `<div class="test-reason" style="color:#ff6666;margin-top:0.3rem">Error: ${escapeHtml(fix.error)}</div>` : ''}
-          ${isLive && fix.prescription ? renderPrescription(fix.prescription, fix.fix_category) : ''}
-        </div>
-      `;
+    const hasDeploying = rem.deployed_fixes.some(f => f.status === 'deploying');
+    html += '<h3 style="font-size:0.85rem;color:#4ade80;margin-bottom:0.75rem">Auto-Deployed Fixes';
+    if (hasDeploying) {
+      html += ' <span class="deploying-indicator"><span class="spinner"></span> deploying in background</span>';
     }
+    html += '</h3>';
+    html += '<div id="deployedFixesContainer">';
+    for (const fix of rem.deployed_fixes) {
+      html += renderDeployedFix(fix);
+    }
+    html += '</div>';
   }
 
   // Show per-failure integration hints
@@ -882,6 +1118,47 @@ function renderRemediation(rem) {
   content.innerHTML = html;
 }
 
+function renderDeployedFix(fix) {
+  const isLive = fix.status === 'live';
+  const isDeploying = fix.status === 'deploying';
+  const statusClass = isLive ? 'live' : (isDeploying ? 'deploying' : 'failed');
+  const fixClass = isLive ? '' : (isDeploying ? 'deploying' : 'failed');
+
+  let html = `<div class="deployed-fix ${fixClass}">`;
+  html += '<div class="deployed-fix-header">';
+  html += `<span class="deployed-fix-name">`;
+  html += `<a href="${escapeHtml(fix.repo_url)}" target="_blank">${escapeHtml(fix.repo)}</a>`;
+  html += ` &mdash; ${escapeHtml((fix.fix_category || '').replace(/_/g, ' '))}`;
+  html += '</span>';
+  html += `<span class="deployed-fix-status ${statusClass}">`;
+  if (isDeploying) {
+    html += '<span class="spinner" style="width:8px;height:8px;border-width:1.5px;border-top-color:#fbbf24;margin-right:4px;vertical-align:middle"></span>';
+  }
+  html += `${fix.status}</span>`;
+  html += '</div>';
+
+  if (isLive && fix.deployed_url) {
+    html += `<div class="deployed-fix-url">Live: <a href="${escapeHtml(fix.deployed_url)}" target="_blank">${escapeHtml(fix.deployed_url)}</a></div>`;
+  }
+
+  html += `<div class="deployed-fix-tests">Fixes: ${fix.fixes_tests ? fix.fixes_tests.join(', ') : 'N/A'}</div>`;
+
+  if (fix.integration_hint) {
+    html += `<div class="test-reason" style="margin-top:0.3rem">${escapeHtml(fix.integration_hint)}</div>`;
+  }
+
+  if (fix.error) {
+    html += `<div class="test-reason" style="color:#ff6666;margin-top:0.3rem">Error: ${escapeHtml(fix.error)}</div>`;
+  }
+
+  if (isLive && fix.prescription) {
+    html += renderPrescription(fix.prescription, fix.fix_category);
+  }
+
+  html += '</div>';
+  return html;
+}
+
 function renderPrescription(rx, fixCategory) {
   const hookLabel = {
     pre_input: 'Before user input',
@@ -890,7 +1167,7 @@ function renderPrescription(rx, fixCategory) {
     post_tool: 'After agent tool call',
   };
 
-  const patchId = 'patch-' + fixCategory.replace(/\W/g, '-');
+  const patchId = 'patch-' + (fixCategory || 'unknown').replace(/\W/g, '-');
   let html = '<div class="prescription">';
   html += '<div class="prescription-header">';
   html += '<span class="prescription-label">Prescription</span>';
@@ -934,6 +1211,9 @@ function escapeHtml(str) {
   div.textContent = str;
   return div.innerHTML;
 }
+
+// ── Init ─────────────────────────────────────────────────────────
+loadPastResults();
 </script>
 </body>
 </html>
