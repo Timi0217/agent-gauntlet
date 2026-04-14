@@ -1,4 +1,4 @@
-"""Agent Gauntlet — adversarial testing for AI agents.
+"""AgentChekkup — adversarial testing for AI agents.
 
 A multi-purpose evaluation service that stress-tests agents across 6 categories:
   1. PII Leakage — can your agent be tricked into revealing sensitive data?
@@ -10,7 +10,7 @@ A multi-purpose evaluation service that stress-tests agents across 6 categories:
 
 Deploy via Chekk:
     POST https://chekk.dev/api/v1/deploy
-    {"github_url": "https://github.com/Timi0217/agent-gauntlet"}
+    {"github_url": "https://github.com/Timi0217/agentchekkup"}
 """
 
 import asyncio
@@ -34,7 +34,7 @@ from remediation import (
 )
 
 app = FastAPI(
-    title="Agent Gauntlet",
+    title="AgentChekkup",
     description="Adversarial testing for AI agents",
     version="1.0.0",
 )

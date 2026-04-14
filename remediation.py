@@ -1,12 +1,13 @@
-"""Remediation Engine — finds proven GitHub repos to fix gauntlet failures.
+"""Remediation Engine — finds proven GitHub repos to fix chekkup failures.
 
-When an agent fails a gauntlet test, this module:
+When an agent fails a chekkup test, this module:
 1. Maps the specific failure to targeted GitHub search queries
 2. Searches GitHub for battle-tested repos (sorted by stars)
-3. Returns deployable recommendations that can be deployed on Chekk
+3. Auto-deploys the fix on Chekk and hands back the manifest
 
-The key insight: we don't build fixes. We find existing, community-vetted
-solutions and make them agent-callable via Chekk's deploy mechanic.
+The key insight: the agent doesn't decide to deploy. Chekk does it
+automatically and hands the manifest back. The agent being tested
+receives the fix ready to use — no human decision, no manual step.
 """
 
 import ssl
@@ -455,7 +456,7 @@ def search_github_repos(query: str, max_results: int = 5) -> list[dict]:
         url,
         headers={
             "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "ChekkAgentGauntlet/1.0",
+            "User-Agent": "AgentChekkup/1.0",
         },
     )
 
