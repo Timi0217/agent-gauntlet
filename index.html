@@ -1903,6 +1903,9 @@ function renderManifestPanel(panel, data, fixSlug) {
   html += '<div class="manifest-tabs">';
   html += `<button class="manifest-tab active" onclick="switchManifestTab('${tabId}','routes',this)">Routes</button>`;
   html += `<button class="manifest-tab" onclick="switchManifestTab('${tabId}','llms',this)">llms.txt</button>`;
+  if (data.llms_txt) {
+    html += `<button onclick="downloadLlmsTxt('${tabId}','llms.txt')" style="margin-left:auto;padding:0.15rem 0.5rem;background:#1a2233;border:1px solid #334155;border-radius:2px;color:#60a5fa;font-family:inherit;font-size:0.6rem;font-weight:600;cursor:pointer;text-transform:uppercase;letter-spacing:0.03em;transition:background 0.15s" onmouseover="this.style.background='#1e3a5f'" onmouseout="this.style.background='#1a2233'">Download</button>`;
+  }
   html += '</div>';
 
   // Routes tab
@@ -1933,6 +1936,20 @@ function renderManifestPanel(panel, data, fixSlug) {
   html += '</div>';
 
   panel.innerHTML = html;
+}
+
+function downloadLlmsTxt(tabId, filename) {
+  const el = document.getElementById(`mtab-${tabId}-llms`);
+  if (!el) return;
+  const llmsDiv = el.querySelector('.manifest-llms') || el.querySelector('[style*="pre-wrap"]');
+  if (!llmsDiv) return;
+  const text = llmsDiv.textContent;
+  const blob = new Blob([text], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename || 'llms.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 function switchManifestTab(tabId, tabName, btn) {
@@ -2002,6 +2019,9 @@ function renderStandaloneManifest(container, data, owner, repo) {
   html += '<div style="display:flex;border-bottom:1px solid #222;background:#0d1117">';
   html += `<button class="manifest-tab active" onclick="switchManifestTab('${tabId}','routes',this)" style="padding:0.4rem 0.8rem;font-size:0.65rem;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#60a5fa;cursor:pointer;border:none;background:transparent;font-family:inherit;border-bottom:2px solid #60a5fa">Routes</button>`;
   html += `<button class="manifest-tab" onclick="switchManifestTab('${tabId}','llms',this)" style="padding:0.4rem 0.8rem;font-size:0.65rem;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#666;cursor:pointer;border:none;background:transparent;font-family:inherit;border-bottom:2px solid transparent">llms.txt</button>`;
+  if (data.llms_txt) {
+    html += `<button onclick="downloadLlmsTxt('${tabId}','${escapeHtml(repo)}-llms.txt')" style="margin-left:auto;padding:0.25rem 0.6rem;background:#1a2233;border:1px solid #334155;border-radius:2px;color:#60a5fa;font-family:inherit;font-size:0.6rem;font-weight:600;cursor:pointer;text-transform:uppercase;letter-spacing:0.03em;transition:background 0.15s;align-self:center" onmouseover="this.style.background='#1e3a5f'" onmouseout="this.style.background='#1a2233'">Download llms.txt</button>`;
+  }
   html += '</div>';
 
   // Routes tab
