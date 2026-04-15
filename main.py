@@ -26,7 +26,7 @@ from pydantic import BaseModel, HttpUrl
 from pathlib import Path
 
 from categories import ALL_CATEGORIES
-from runner import run_category
+from runner import run_category, run_category_with_prescriptions
 from scorer import score_test, compute_category_score
 from remediation import (
     get_remediation_for_test,
@@ -345,6 +345,172 @@ def get_eval_remediation(eval_id: str):
 def list_results(limit: int = 50):
     """List recent evaluation results from SQLite (persistent history)."""
     return {"evaluations": list_evaluations(limit=limit)}
+
+
+@app.post("/api/evaluate/{eval_id}/retest")
+async def retest_with_fixes(eval_id: str):
+    """Re-run a completed evaluation with prescriptions applied.
+
+    Takes a completed evaluation that has live fixes with prescriptions,
+    wraps the original agent with those prescriptions (pre-input scanning,
+    post-output scrubbing, system prompt patching), and re-runs every
+    failed test. Returns a before/after comparison proving the fixes work.
+
+    This is the closed-loop verification: diagnose → fix → deploy → re-test → pass.
+    """
+    global call_count
+    call_count += 1
+
+    # Load the original evaluation
+    evaluation = evaluations.get(eval_id) or load_evaluation(eval_id)
+    if not evaluation:
+        return JSONResponse(status_code=404, content={"error": "Evaluation not found"})
+
+    if evaluation["status"] != "completed":
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Evaluation not yet completed", "status": evaluation["status"]},
+        )
+
+    # Collect all live prescriptions from deployed fixes
+    remediation = evaluation.get("remediation", {})
+    deployed_fixes = remediation.get("deployed_fixes", [])
+    live_fixes = [f for f in deployed_fixes if f.get("status") == "live"]
+
+    if not live_fixes:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "No live fixes to test. Wait for fixes to deploy or run /api/evaluate first."},
+        )
+
+    # Gather prescriptions from all live fixes
+    prescriptions = []
+    for fix in live_fixes:
+        rx = fix.get("prescription")
+        if rx:
+            prescriptions.append(rx)
+
+    if not prescriptions:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Live fixes exist but none have prescriptions attached."},
+        )
+
+    # Re-run failed categories with prescriptions applied
+    agent_url = evaluation["agent_url"]
+    protocol = evaluation.get("protocol", "simple")
+    timeout = 30.0
+
+    original_results = evaluation.get("results", {})
+    retest_results = {}
+    comparison = {}
+
+    for cat_id, cat_data in original_results.items():
+        tests = ALL_CATEGORIES.get(cat_id, [])
+        if not tests:
+            continue
+
+        # Only re-test categories that had failures
+        if cat_data.get("failed", 0) == 0:
+            comparison[cat_id] = {
+                "skipped": True,
+                "reason": "All tests passed originally",
+                "before": {"score": cat_data["score"], "passed": cat_data["passed"], "total": cat_data["total"]},
+            }
+            continue
+
+        try:
+            # Run with prescriptions applied
+            raw_results = await run_category_with_prescriptions(
+                agent_url, protocol, tests, prescriptions, timeout
+            )
+
+            scored = []
+            for test, result in zip(tests, raw_results):
+                scored.append(score_test(test, result))
+
+            category_score = compute_category_score(scored)
+
+            retest_results[cat_id] = {
+                "score": category_score["score"],
+                "passed": category_score["passed"],
+                "failed": category_score["failed"],
+                "total": category_score["total"],
+                "tests": scored,
+            }
+
+            # Build before/after comparison
+            before = {
+                "score": cat_data["score"],
+                "passed": cat_data["passed"],
+                "failed": cat_data["failed"],
+                "total": cat_data["total"],
+            }
+            after = {
+                "score": category_score["score"],
+                "passed": category_score["passed"],
+                "failed": category_score["failed"],
+                "total": category_score["total"],
+            }
+            comparison[cat_id] = {
+                "skipped": False,
+                "before": before,
+                "after": after,
+                "improved": after["score"] > before["score"],
+                "all_passing": after["failed"] == 0,
+                "tests_fixed": after["passed"] - before["passed"],
+            }
+
+        except Exception as e:
+            comparison[cat_id] = {
+                "skipped": False,
+                "error": str(e),
+                "before": {"score": cat_data["score"], "passed": cat_data["passed"], "total": cat_data["total"]},
+            }
+
+    # Compute overall retest scorecard
+    total_before_passed = sum(c.get("before", {}).get("passed", 0) for c in comparison.values() if not c.get("skipped"))
+    total_after_passed = sum(c.get("after", {}).get("passed", 0) for c in comparison.values() if c.get("after"))
+    total_tests = sum(c.get("before", {}).get("total", 0) for c in comparison.values() if not c.get("skipped"))
+    total_before_score = sum(c.get("before", {}).get("score", 0) for c in comparison.values() if not c.get("skipped"))
+    total_after_score = sum(c.get("after", {}).get("score", 0) for c in comparison.values() if c.get("after"))
+    retested_cats = sum(1 for c in comparison.values() if not c.get("skipped") and c.get("after"))
+
+    before_avg = round(total_before_score / retested_cats) if retested_cats > 0 else 0
+    after_avg = round(total_after_score / retested_cats) if retested_cats > 0 else 0
+
+    retest_eval = {
+        "eval_id": eval_id,
+        "retest_id": str(uuid.uuid4())[:8],
+        "agent_url": agent_url,
+        "status": "completed",
+        "prescriptions_applied": len(prescriptions),
+        "fixes_used": [
+            {"repo": f["repo"], "fix_category": f["fix_category"], "deployed_url": f["deployed_url"]}
+            for f in live_fixes if f.get("prescription")
+        ],
+        "comparison": comparison,
+        "summary": {
+            "before_score": before_avg,
+            "after_score": after_avg,
+            "before_passed": total_before_passed,
+            "after_passed": total_after_passed,
+            "total_tests": total_tests,
+            "tests_fixed": total_after_passed - total_before_passed,
+            "all_passing": all(
+                c.get("all_passing", False) or c.get("skipped", False)
+                for c in comparison.values()
+            ),
+        },
+        "retest_results": retest_results,
+    }
+
+    # Persist the retest as part of the original evaluation
+    if eval_id in evaluations:
+        evaluations[eval_id]["retest"] = retest_eval
+        save_evaluation(evaluations[eval_id])
+
+    return retest_eval
 
 
 # ── Background evaluation logic ────────────────────────────────────
