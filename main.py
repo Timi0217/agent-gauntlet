@@ -14,6 +14,7 @@ Deploy via Chekk:
 """
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -345,6 +346,32 @@ def get_eval_remediation(eval_id: str):
 def list_results(limit: int = 50):
     """List recent evaluation results from SQLite (persistent history)."""
     return {"evaluations": list_evaluations(limit=limit)}
+
+
+@app.get("/api/manifest/{owner}/{repo}")
+def get_manifest(owner: str, repo: str):
+    """Fetch the agent manifest for a deployed service from the Chekk deploy service.
+
+    Returns detected routes, llms.txt, framework, and deployed URL.
+    Proxies to the deploy service's /api/v1/llms/{owner}/{repo}/json endpoint.
+    """
+    import urllib.request
+    import ssl
+
+    try:
+        import certifi
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ssl_ctx = ssl.create_default_context()
+
+    deploy_url = f"https://chekk-deploy-production.up.railway.app/api/v1/llms/{owner}/{repo}/json"
+    try:
+        req = urllib.request.Request(deploy_url, headers={"Accept": "application/json"})
+        resp = urllib.request.urlopen(req, timeout=15, context=ssl_ctx)
+        data = json.loads(resp.read())
+        return data
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": f"Failed to fetch manifest: {e}"})
 
 
 @app.post("/api/evaluate/{eval_id}/retest")

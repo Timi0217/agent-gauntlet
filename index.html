@@ -778,6 +778,119 @@
     letter-spacing: 0.05em;
   }
 
+  /* ── Manifest Viewer ──────────────────────────────── */
+  .manifest-toggle {
+    padding: 0.2rem 0.5rem;
+    background: #1a2233;
+    border: 1px solid #334155;
+    border-radius: 2px;
+    color: #60a5fa;
+    font-family: inherit;
+    font-size: 0.65rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    transition: background 0.15s;
+  }
+  .manifest-toggle:hover { background: #1e3a5f; }
+  .manifest-toggle.open { background: #60a5fa22; border-color: #60a5fa; }
+  .manifest-panel {
+    display: none;
+    margin-top: 0.6rem;
+    border: 1px solid #1a2233;
+    border-radius: 4px;
+    background: #0d1117;
+    overflow: hidden;
+  }
+  .manifest-panel.open { display: block; }
+  .manifest-tabs {
+    display: flex;
+    border-bottom: 1px solid #1a2233;
+  }
+  .manifest-tab {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #666;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    font-family: inherit;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+  }
+  .manifest-tab:hover { color: #aaa; }
+  .manifest-tab.active {
+    color: #60a5fa;
+    border-bottom-color: #60a5fa;
+  }
+  .manifest-tab-content {
+    display: none;
+    padding: 0.8rem;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .manifest-tab-content.active { display: block; }
+  .manifest-route {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid #111827;
+    font-size: 0.75rem;
+  }
+  .manifest-route:last-child { border-bottom: none; }
+  .manifest-route .method {
+    display: inline-block;
+    padding: 0.1rem 0.35rem;
+    border-radius: 2px;
+    font-weight: 700;
+    font-size: 0.6rem;
+    min-width: 36px;
+    text-align: center;
+  }
+  .manifest-route .path { color: #e0e0e0; }
+  .manifest-route .handler { color: #555; font-size: 0.65rem; margin-left: auto; }
+  .manifest-llms {
+    font-size: 0.7rem;
+    color: #ccc;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  .manifest-llms h1, .manifest-llms h2, .manifest-llms h3 {
+    color: #60a5fa;
+    margin: 0.8rem 0 0.3rem;
+    font-size: 0.8rem;
+  }
+  .manifest-meta {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    padding: 0.6rem 0.8rem;
+    background: #111827;
+    border-bottom: 1px solid #1a2233;
+    font-size: 0.7rem;
+    color: #888;
+  }
+  .manifest-meta-item {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .manifest-meta-item .label { color: #555; text-transform: uppercase; font-size: 0.6rem; letter-spacing: 0.04em; }
+  .manifest-meta-item .value { color: #ccc; font-weight: 600; }
+  .manifest-loading {
+    padding: 1rem;
+    text-align: center;
+    color: #555;
+    font-size: 0.75rem;
+  }
+
   /* ── Deploying spinner ──────────────────────────────── */
   .deploying-indicator {
     display: inline-flex;
@@ -913,6 +1026,13 @@
       <span class="method post">POST</span>
       <span class="path">/api/remediate</span>
       <div class="desc">Find GitHub repos that fix specific failures. Body: {test_ids?, categories?}. Returns deploy-ready repos with Chekk deploy commands.</div>
+    </div>
+
+    <div style="font-size:0.7rem;color:#666;text-transform:uppercase;letter-spacing:0.05em;margin:1rem 0 0.5rem;font-weight:600">Manifests</div>
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/manifest/{owner}/{repo}</span>
+      <div class="desc">Fetch the agent manifest for a deployed service. Returns detected routes, llms.txt, framework, and live URL from the Chekk deploy service.</div>
     </div>
 
     <div style="font-size:0.7rem;color:#666;text-transform:uppercase;letter-spacing:0.05em;margin:1rem 0 0.5rem;font-weight:600">Discovery</div>
@@ -1595,17 +1715,25 @@ function renderDeployedFix(fix) {
   const statusClass = isLive ? 'live' : (isDeploying ? 'deploying' : 'failed');
   const fixClass = isLive ? '' : (isDeploying ? 'deploying' : 'failed');
 
+  // Generate a unique ID for this fix's manifest panel
+  const fixSlug = (fix.repo || 'unknown').replace(/[^a-zA-Z0-9]/g, '-');
+
   let html = `<div class="deployed-fix ${fixClass}">`;
   html += '<div class="deployed-fix-header">';
   html += `<span class="deployed-fix-name">`;
   html += `<a href="${escapeHtml(fix.repo_url)}" target="_blank">${escapeHtml(fix.repo)}</a>`;
   html += ` &mdash; ${escapeHtml((fix.fix_category || '').replace(/_/g, ' '))}`;
   html += '</span>';
+  html += '<span style="display:flex;align-items:center;gap:0.4rem">';
+  if (isLive && fix.repo) {
+    html += `<button class="manifest-toggle" onclick="toggleManifest('${fixSlug}', '${escapeHtml(fix.repo)}')">Manifest</button>`;
+  }
   html += `<span class="deployed-fix-status ${statusClass}">`;
   if (isDeploying) {
     html += '<span class="spinner" style="width:8px;height:8px;border-width:1.5px;border-top-color:#fbbf24;margin-right:4px;vertical-align:middle"></span>';
   }
   html += `${fix.status}</span>`;
+  html += '</span>';
   html += '</div>';
 
   if (isLive && fix.deployed_url) {
@@ -1624,6 +1752,13 @@ function renderDeployedFix(fix) {
 
   if (isLive && fix.prescription) {
     html += renderPrescription(fix.prescription, fix.fix_category);
+  }
+
+  // Manifest panel (hidden by default)
+  if (isLive && fix.repo) {
+    html += `<div class="manifest-panel" id="manifest-${fixSlug}">`;
+    html += '<div class="manifest-loading"><span class="spinner"></span> Loading manifest...</div>';
+    html += '</div>';
   }
 
   html += '</div>';
@@ -1681,6 +1816,117 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+// ── Manifest Viewer ─────────────────────────────────────────────
+
+const manifestCache = {};
+
+async function toggleManifest(fixSlug, repoFullName) {
+  const panel = document.getElementById(`manifest-${fixSlug}`);
+  const btn = panel?.previousElementSibling?.querySelector?.('.manifest-toggle')
+    || document.querySelector(`button[onclick*="'${fixSlug}'"]`);
+
+  if (!panel) return;
+
+  const isOpen = panel.classList.contains('open');
+  if (isOpen) {
+    panel.classList.remove('open');
+    if (btn) btn.classList.remove('open');
+    return;
+  }
+
+  panel.classList.add('open');
+  if (btn) btn.classList.add('open');
+
+  // If already loaded, just show it
+  if (manifestCache[repoFullName]) {
+    renderManifestPanel(panel, manifestCache[repoFullName], fixSlug);
+    return;
+  }
+
+  // Fetch from backend
+  panel.innerHTML = '<div class="manifest-loading"><span class="spinner"></span> Loading manifest...</div>';
+
+  const [owner, repo] = repoFullName.split('/');
+  try {
+    const resp = await fetch(`/api/manifest/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+    if (!resp.ok) throw new Error(`${resp.status}`);
+    const data = await resp.json();
+    manifestCache[repoFullName] = data;
+    renderManifestPanel(panel, data, fixSlug);
+  } catch (err) {
+    panel.innerHTML = `<div class="manifest-loading" style="color:#ff6666">Failed to load manifest: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderManifestPanel(panel, data, fixSlug) {
+  const tabId = fixSlug;
+  let html = '';
+
+  // Meta bar
+  html += '<div class="manifest-meta">';
+  if (data.framework) {
+    html += `<div class="manifest-meta-item"><span class="label">Framework</span><span class="value">${escapeHtml(data.framework)}</span></div>`;
+  }
+  if (data.status) {
+    html += `<div class="manifest-meta-item"><span class="label">Status</span><span class="value" style="color:#4ade80">${escapeHtml(data.status)}</span></div>`;
+  }
+  if (data.routes) {
+    html += `<div class="manifest-meta-item"><span class="label">Routes</span><span class="value">${data.routes.length}</span></div>`;
+  }
+  if (data.deployed_url) {
+    html += `<div class="manifest-meta-item"><span class="label">URL</span><span class="value"><a href="${escapeHtml(data.deployed_url)}" target="_blank" style="color:#60a5fa;text-decoration:none">${escapeHtml(data.deployed_url.replace(/^https?:\/\//, ''))}</a></span></div>`;
+  }
+  html += '</div>';
+
+  // Tabs
+  html += '<div class="manifest-tabs">';
+  html += `<button class="manifest-tab active" onclick="switchManifestTab('${tabId}','routes',this)">Routes</button>`;
+  html += `<button class="manifest-tab" onclick="switchManifestTab('${tabId}','llms',this)">llms.txt</button>`;
+  html += '</div>';
+
+  // Routes tab
+  html += `<div class="manifest-tab-content active" id="mtab-${tabId}-routes">`;
+  if (data.routes && data.routes.length > 0) {
+    for (const route of data.routes) {
+      const methodClass = (route.method || 'GET').toLowerCase();
+      html += '<div class="manifest-route">';
+      html += `<span class="method ${methodClass}">${escapeHtml(route.method || 'GET')}</span>`;
+      html += `<span class="path">${escapeHtml(route.path)}</span>`;
+      if (route.handler) {
+        html += `<span class="handler">${escapeHtml(route.handler)}</span>`;
+      }
+      html += '</div>';
+    }
+  } else {
+    html += '<div style="color:#555;font-size:0.75rem;padding:0.5rem 0">No routes detected</div>';
+  }
+  html += '</div>';
+
+  // llms.txt tab
+  html += `<div class="manifest-tab-content" id="mtab-${tabId}-llms">`;
+  if (data.llms_txt) {
+    html += `<div class="manifest-llms">${escapeHtml(data.llms_txt)}</div>`;
+  } else {
+    html += '<div style="color:#555;font-size:0.75rem;padding:0.5rem 0">No llms.txt generated</div>';
+  }
+  html += '</div>';
+
+  panel.innerHTML = html;
+}
+
+function switchManifestTab(tabId, tabName, btn) {
+  // Deactivate all tabs and contents for this panel
+  const panel = btn.closest('.manifest-panel');
+  if (!panel) return;
+
+  panel.querySelectorAll('.manifest-tab').forEach(t => t.classList.remove('active'));
+  panel.querySelectorAll('.manifest-tab-content').forEach(c => c.classList.remove('active'));
+
+  btn.classList.add('active');
+  const target = document.getElementById(`mtab-${tabId}-${tabName}`);
+  if (target) target.classList.add('active');
 }
 
 // ── Init ─────────────────────────────────────────────────────────
