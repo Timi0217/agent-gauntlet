@@ -710,6 +710,74 @@
   .retest-btn:hover { background: #a78bfa33; }
   .retest-btn:disabled { background: #222; color: #555; border-color: #333; cursor: not-allowed; }
 
+  /* ── After-Fix Scorecard Updates ──────────────────── */
+  .overall-before-after {
+    display: flex;
+    gap: 1.5rem;
+    justify-content: center;
+    align-items: center;
+    margin-top: 0.75rem;
+  }
+  .overall-before {
+    text-align: center;
+  }
+  .overall-before .score-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #ff4444;
+    text-decoration: line-through;
+    opacity: 0.5;
+  }
+  .overall-before .score-label {
+    font-size: 0.6rem;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .overall-after-arrow {
+    font-size: 1.5rem;
+    color: #4ade80;
+  }
+  .cat-card.improved { border-color: #4ade8066; }
+  .cat-card .cat-after {
+    display: none;
+    margin-top: 0.4rem;
+  }
+  .cat-card.improved .cat-after { display: block; }
+  .cat-before-score {
+    font-size: 0.7rem;
+    color: #ff6666;
+    text-decoration: line-through;
+    opacity: 0.5;
+  }
+  .cat-after-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.7rem;
+  }
+  .cat-after-arrow { color: #4ade80; }
+  .cat-after-score { color: #4ade80; font-weight: 600; }
+  .cat-delta {
+    font-size: 0.65rem;
+    padding: 0.1rem 0.3rem;
+    border-radius: 2px;
+    font-weight: 600;
+  }
+  .cat-delta.positive { background: #4ade8022; color: #4ade80; }
+  .cat-fixed-badge {
+    display: inline-block;
+    font-size: 0.6rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 2px;
+    font-weight: 600;
+    text-transform: uppercase;
+    background: #4ade8022;
+    color: #4ade80;
+    margin-left: 0.4rem;
+    letter-spacing: 0.05em;
+  }
+
   /* ── Deploying spinner ──────────────────────────────── */
   .deploying-indicator {
     display: inline-flex;
@@ -974,7 +1042,15 @@ async function loadEvaluation(evalId) {
       renderScorecard(result);
       if (result.remediation) {
         renderRemediation(result.remediation);
-        startFixPolling(evalId);
+        // Check if all fixes are already live — if so, auto-retest
+        const allLive = (result.remediation.deployed_fixes || []).every(f => f.status === 'live');
+        const hasFixes = (result.remediation.deployed_fixes || []).length > 0;
+        if (allLive && hasFixes) {
+          currentEvalId = evalId;
+          autoRetestWithFixes();
+        } else {
+          startFixPolling(evalId);
+        }
       }
     }
 
@@ -1077,6 +1153,11 @@ function startFixPolling(evalId) {
 
       if (!data.still_deploying) {
         stopFixPolling();
+        // All fixes are live — auto-trigger retest to show before/after
+        const allLive = (data.deployed_fixes || []).every(f => f.status === 'live');
+        if (allLive && (data.deployed_fixes || []).length > 0) {
+          autoRetestWithFixes();
+        }
         // Refresh past results to show final state
         loadPastResults();
       }
@@ -1237,6 +1318,46 @@ function renderRemediation(rem) {
 
 // ── Retest with Fixes ─────────────────────────────────────────────
 
+async function autoRetestWithFixes() {
+  // Auto-triggered after all fixes deploy — no user click needed
+  if (!currentEvalId) return;
+
+  const status = document.getElementById('status');
+  const statusText = document.getElementById('statusText');
+  status.classList.add('visible');
+  statusText.textContent = 'Fixes deployed — verifying improvements...';
+
+  // Disable the manual retest button if it exists
+  const btn = document.getElementById('retestBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Verifying fixes...';
+  }
+
+  try {
+    const resp = await fetch(`/api/evaluate/${currentEvalId}/retest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+
+    if (!resp.ok) return;
+
+    const data = await resp.json();
+    renderRetestComparison(data);
+    updateScorecardWithFixes(data);
+
+  } catch (err) {
+    // Silently fail — user can still click the button manually
+  } finally {
+    status.classList.remove('visible');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Retest Agent with Fixes Applied';
+    }
+  }
+}
+
 async function retestWithFixes() {
   if (!currentEvalId) return alert('No evaluation to retest');
 
@@ -1265,6 +1386,7 @@ async function retestWithFixes() {
 
     const data = await resp.json();
     renderRetestComparison(data);
+    updateScorecardWithFixes(data);
 
   } catch (err) {
     alert('Retest error: ' + err.message);
@@ -1353,6 +1475,118 @@ function renderRetestComparison(data) {
 
   content.innerHTML = html;
   section.scrollIntoView({ behavior: 'smooth' });
+}
+
+function updateScorecardWithFixes(data) {
+  const s = data.summary || {};
+  const comparison = data.comparison || {};
+
+  // ── Update overall score section ───────────────────────
+  const overall = document.getElementById('overall');
+  if (overall && s.after_score != null) {
+    const afterScore = s.after_score;
+    const beforeScore = s.before_score || 0;
+    const afterBadge = afterScore >= 90 ? 'gold' : afterScore >= 70 ? 'silver' : afterScore >= 50 ? 'bronze' : 'none';
+
+    overall.innerHTML = `
+      <div class="overall-score ${afterBadge}">${afterScore}</div>
+      <div class="overall-label">Overall Score — After Fixes</div>
+      <div class="overall-badge badge-${afterBadge}">${afterBadge === 'none' ? 'No Badge' : afterBadge + ' Badge'}</div>
+      <div class="overall-before-after">
+        <div class="overall-before">
+          <div class="score-value">${beforeScore}</div>
+          <div class="score-label">Before</div>
+        </div>
+        <div class="overall-after-arrow">&rarr;</div>
+        <div style="text-align:center">
+          <div style="font-size:2rem;font-weight:700;color:#4ade80;line-height:1">${afterScore}</div>
+          <div class="score-label" style="color:#4ade80">After</div>
+        </div>
+      </div>
+      <div class="overall-meta" style="margin-top:0.75rem">
+        ${s.after_passed || 0} passed &middot; ${(s.total_tests || 0) - (s.after_passed || 0)} failed &middot; ${s.total_tests || 0} total tests
+        &middot; <span style="color:#4ade80;font-weight:600">+${s.tests_fixed || 0} fixed</span>
+      </div>
+    `;
+  }
+
+  // ── Update category cards ──────────────────────────────
+  const grid = document.getElementById('catGrid');
+  if (!grid) return;
+
+  const cards = grid.querySelectorAll('.cat-card');
+  const catOrder = ['pii_leakage', 'injection_resistance', 'graceful_failure', 'instruction_adherence', 'output_consistency', 'hallucination'];
+
+  cards.forEach((card, idx) => {
+    const catId = catOrder[idx];
+    if (!catId) return;
+
+    const c = comparison[catId];
+    if (!c) return;
+
+    // Get after-fix data
+    const afterData = c.skipped ? c.before : c.after;
+    if (!afterData) return;
+
+    const afterScore = afterData.score || 0;
+    const beforeData = c.before || {};
+    const beforeScore = beforeData.score || 0;
+    const delta = afterScore - beforeScore;
+    const improved = delta > 0;
+    const allPassing = c.all_passing || c.skipped;
+
+    if (improved || allPassing) {
+      card.classList.add('improved');
+    }
+
+    // Update the score display
+    const scoreEl = card.querySelector('.cat-score');
+    if (scoreEl && improved) {
+      const scoreClass = afterScore >= 80 ? 'pass' : afterScore >= 50 ? 'warn' : 'fail';
+      scoreEl.className = `cat-score ${scoreClass}`;
+      scoreEl.textContent = afterScore;
+    }
+
+    // Update the progress bar
+    const barFill = card.querySelector('.cat-bar-fill');
+    if (barFill && improved) {
+      const scoreClass = afterScore >= 80 ? 'pass' : afterScore >= 50 ? 'warn' : 'fail';
+      barFill.className = `cat-bar-fill ${scoreClass}`;
+      barFill.style.width = `${afterScore}%`;
+    }
+
+    // Update meta line
+    const meta = card.querySelector('.cat-meta');
+    if (meta) {
+      let metaHtml = `${afterData.passed || 0}/${afterData.total || 0} passed`;
+      if (improved) {
+        metaHtml += `<span class="cat-fixed-badge">+${delta}</span>`;
+      } else if (c.skipped) {
+        metaHtml += `<span class="cat-fixed-badge" style="background:#4ade8011;color:#666">already passing</span>`;
+      }
+      meta.innerHTML = metaHtml;
+    }
+
+    // Add before→after indicator below bar
+    let afterEl = card.querySelector('.cat-after');
+    if (!afterEl) {
+      afterEl = document.createElement('div');
+      afterEl.className = 'cat-after';
+      card.appendChild(afterEl);
+    }
+
+    if (improved) {
+      afterEl.style.display = 'block';
+      afterEl.innerHTML = `
+        <div class="cat-after-row">
+          <span class="cat-before-score">${beforeScore}</span>
+          <span class="cat-after-arrow">&rarr;</span>
+          <span class="cat-after-score">${afterScore}</span>
+          <span class="cat-delta positive">+${delta}</span>
+        </div>
+      `;
+    }
+  });
 }
 
 function renderDeployedFix(fix) {
