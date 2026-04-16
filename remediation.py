@@ -1028,11 +1028,11 @@ def get_remediation_for_evaluation(scored_results: dict) -> dict:
     return remediation
 
 
-# ── Known Fixes Registry ──────────────────────────────────────────────
-# Pre-deployed fix tools on Chekk that are proven to work. The remediation
-# engine checks this registry FIRST before searching GitHub and deploying
-# unknown repos. These are lightweight FastAPI services purpose-built for
-# each fix category.
+# ── Known Fixes Registry (LAST RESORT) ────────────────────────────────
+# Pre-deployed fallback tools on Chekk. Used ONLY when GitHub search
+# finds no viable third-party repos for a fix category. The primary flow
+# is: search GitHub → deploy proven repo via Chekk → apply as prescription.
+# These exist purely as a safety net so no failure goes unaddressed.
 
 KNOWN_FIXES = {
     "pii_scrubbing": {
@@ -1290,12 +1290,12 @@ def auto_deploy_fixes(
 ) -> dict:
     """Auto-deploy the top fix for each failure category on Chekk.
 
-    First checks the KNOWN_FIXES registry for pre-deployed tools. If a
-    known fix exists for a category, it's used instantly (no deploy wait).
-    Otherwise falls back to deploying the best GitHub repo found.
+    Primary flow: search GitHub → find proven repos → deploy via Chekk →
+    apply as prescription → retest. KNOWN_FIXES is the LAST resort,
+    used only when GitHub search returned 0 viable repos for a category.
 
-    When background=True (default), unknown-repo deploys run in daemon
-    threads so the evaluation returns fast. Known fixes resolve immediately.
+    When background=True (default), deploys run in daemon threads so the
+    evaluation returns fast.
 
     on_fix_complete is called per-fix when it finishes (live/failed/timeout).
     Use this to persist intermediate results to SQLite.
@@ -1305,7 +1305,42 @@ def auto_deploy_fixes(
     deployed_fixes = []
 
     for fix_cat, info in best_per_category.items():
-        # ── Check known fixes first ──────────────────────────────
+        # ── Primary: deploy the best GitHub repo found ────────────
+        repo = info["repo"]
+        if repo:
+            repo_url = repo.get("url", "")
+            repo_name = repo.get("full_name", "")
+
+            if repo_url and repo_name not in already_deployed:
+                already_deployed.add(repo_name)
+
+                fix_entry = {
+                    "fix_category": fix_cat,
+                    "repo": repo_name,
+                    "repo_url": repo_url,
+                    "stars": repo.get("stars", 0),
+                    "fixes_tests": info["test_ids"],
+                    "integration_hint": info["integration_hint"],
+                    "status": "deploying",
+                    "deployed_url": None,
+                    "manifest": None,
+                    "source": "github_search",
+                }
+                deployed_fixes.append(fix_entry)
+
+                if background:
+                    t = threading.Thread(
+                        target=_deploy_single_fix,
+                        args=(fix_entry, fix_cat, on_fix_complete),
+                        daemon=True,
+                    )
+                    t.start()
+                    log.info("GitHub fix deploying for %s: %s (%d stars)", fix_cat, repo_name, repo.get("stars", 0))
+                else:
+                    _deploy_single_fix(fix_entry, fix_cat, on_fix_complete)
+                continue
+
+        # ── Last resort: use known fallback fix ───────────────────
         known = KNOWN_FIXES.get(fix_cat)
         if known:
             deployed_url = known["deployed_url"]
@@ -1329,52 +1364,17 @@ def auto_deploy_fixes(
                 "deployed_url": deployed_url,
                 "manifest": manifest,
                 "prescription": prescription,
-                "source": "known_fix",
+                "source": "fallback",
             }
             deployed_fixes.append(fix_entry)
-            log.info("Known fix applied for %s: %s -> %s", fix_cat, repo_name, deployed_url)
+            log.info("Fallback fix applied for %s: %s (no GitHub repo found)", fix_cat, repo_name)
 
             if on_fix_complete:
                 on_fix_complete(fix_entry)
             continue
 
-        # ── Fall back to GitHub repo deploy ───────────────────────
-        repo = info["repo"]
-        if not repo:
-            # No GitHub repo found and no known fix for this category
-            log.warning("No fix available for category %s (0 repos, no known fix)", fix_cat)
-            continue
-        repo_url = repo.get("url", "")
-        repo_name = repo.get("full_name", "")
-
-        if not repo_url or repo_name in already_deployed:
-            continue
-        already_deployed.add(repo_name)
-
-        fix_entry = {
-            "fix_category": fix_cat,
-            "repo": repo_name,
-            "repo_url": repo_url,
-            "stars": repo.get("stars", 0),
-            "fixes_tests": info["test_ids"],
-            "integration_hint": info["integration_hint"],
-            "status": "deploying",
-            "deployed_url": None,
-            "manifest": None,
-            "source": "github_search",
-        }
-        deployed_fixes.append(fix_entry)
-
-        if background:
-            t = threading.Thread(
-                target=_deploy_single_fix,
-                args=(fix_entry, fix_cat, on_fix_complete),
-                daemon=True,
-            )
-            t.start()
-            log.info("Background deploy started for %s (%s)", repo_name, fix_cat)
-        else:
-            _deploy_single_fix(fix_entry, fix_cat, on_fix_complete)
+        # ── No fix available at all ───────────────────────────────
+        log.warning("No fix available for category %s (0 GitHub repos, no fallback)", fix_cat)
 
     remediation["deployed_fixes"] = deployed_fixes
     return remediation
