@@ -330,15 +330,24 @@
     }
 
     const data = await resp.json();
+    console.log('Report data:', JSON.stringify(data).slice(0, 500));
     renderReport(data, agentUrl || data.agent_url);
   } catch (err) {
-    content.innerHTML = '<div class="error">Failed to load report: ' + err.message + '</div>';
+    console.error('Report error:', err);
+    content.innerHTML = '<div class="error">Failed to load report: ' + err.message + '<br><pre>' + err.stack + '</pre></div>';
   }
 })();
 
 function renderReport(data, agentUrl) {
   const content = document.getElementById('content');
   const sc = data.scorecard || {};
+
+  console.log('sc keys:', Object.keys(sc));
+  console.log('sc.retest:', !!sc.retest);
+  console.log('data.retest:', !!data.retest);
+  console.log('data.has_retest:', data.has_retest);
+  console.log('sc.categories:', sc.categories ? Object.keys(sc.categories) : 'none');
+  console.log('data.category_scores:', data.category_scores);
 
   // Retest data can come from multiple places:
   // 1. data.retest (full eval blob from in-memory or SQLite)

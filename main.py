@@ -192,13 +192,25 @@ def _chat_llm(system: str, messages: list[dict], max_tokens: int = 600) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return (Path(__file__).parent / "index.html").read_text()
+    from fastapi.responses import Response
+    content = (Path(__file__).parent / "index.html").read_text()
+    return Response(
+        content=content,
+        media_type="text/html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
+    )
 
 
 @app.get("/report", response_class=HTMLResponse)
 def report_page():
     """Serve the per-agent report page."""
-    return (Path(__file__).parent / "report.html").read_text()
+    from fastapi.responses import Response
+    content = (Path(__file__).parent / "report.html").read_text()
+    return Response(
+        content=content,
+        media_type="text/html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
+    )
 
 
 @app.get("/api/report")
