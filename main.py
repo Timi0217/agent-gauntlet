@@ -606,10 +606,10 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
             if eval_status == "completed":
                 remediation = eval_data.get("remediation", {})
                 fixes = remediation.get("deployed_fixes", [])
-                all_live = fixes and all(f.get("status") == "live" for f in fixes)
+                live_fixes = [f for f in fixes if f.get("status") == "live"]
                 any_deploying = any(f.get("status") == "deploying" for f in fixes)
 
-                if all_live and fixes:
+                if live_fixes and not any_deploying:
                     session["state"] = "ready_to_fix"
                 elif any_deploying:
                     session["state"] = "fixing"

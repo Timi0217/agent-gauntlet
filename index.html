@@ -1316,9 +1316,9 @@ function startFixPolling(evalId) {
 
       if (!data.still_deploying) {
         stopFixPolling();
-        // All fixes are live — auto-trigger retest to show before/after
-        const allLive = (data.deployed_fixes || []).every(f => f.status === 'live');
-        if (allLive && (data.deployed_fixes || []).length > 0) {
+        // Auto-trigger retest if at least one fix is live (some may timeout/fail — that's OK)
+        const liveFixes = (data.deployed_fixes || []).filter(f => f.status === 'live');
+        if (liveFixes.length > 0) {
           autoRetestWithFixes();
         }
         // Refresh past results to show final state
