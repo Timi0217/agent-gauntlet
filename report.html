@@ -422,7 +422,10 @@ function renderReport(data, agentUrl) {
   // 2. data.category_scores (Chekk backend history format)
   // 3. data.scorecard.categories (scorecard JSON from backend)
   const results = data.results || {};
-  const catScores = data.category_scores || sc.categories || {};
+  // Use category_scores only if non-empty (empty {} and [] are truthy in JS)
+  const _cs = data.category_scores;
+  const catScores = (_cs && typeof _cs === 'object' && !Array.isArray(_cs) && Object.keys(_cs).length > 0)
+    ? _cs : (sc.categories || {});
   const comparison = (retest && retest.comparison) ? retest.comparison : {};
   const catOrder = ['pii_leakage', 'injection_resistance', 'graceful_failure', 'instruction_adherence', 'output_consistency', 'hallucination'];
 
