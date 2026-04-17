@@ -341,7 +341,7 @@ async def evaluate_sync(req: EvaluateRequest):
 def get_results(eval_id: str):
     """Get evaluation results by ID.
 
-    Checks in-memory cache first, falls back to SQLite for historical results.
+    Checks in-memory cache first, then SQLite, then Chekk backend (PostgreSQL).
     """
     # In-memory first (hot / currently running)
     if eval_id in evaluations:
@@ -351,6 +351,16 @@ def get_results(eval_id: str):
     stored = load_evaluation(eval_id)
     if stored:
         return stored
+
+    # Fall back to Chekk backend (survives Railway redeploys)
+    try:
+        url = f"https://chekk-deploy-production.up.railway.app/api/v1/evaluations/{eval_id}"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        resp = urllib.request.urlopen(req, timeout=10, context=_CHAT_SSL_CTX)
+        if resp.status == 200:
+            return json.loads(resp.read())
+    except Exception:
+        pass
 
     return JSONResponse(status_code=404, content={"error": "Evaluation not found"})
 
@@ -452,8 +462,25 @@ def get_eval_remediation(eval_id: str):
 
 @app.get("/api/results")
 def list_results(limit: int = 50):
-    """List recent evaluation results from SQLite (persistent history)."""
-    return {"evaluations": list_evaluations(limit=limit)}
+    """List recent evaluation results.
+
+    Checks local SQLite first, then falls back to the Chekk backend
+    (PostgreSQL) which survives Railway redeploys.
+    """
+    local = list_evaluations(limit=limit)
+    if local:
+        return {"evaluations": local}
+
+    # Local SQLite is empty (Railway wiped it) — fetch from Chekk backend
+    try:
+        url = f"https://chekk-deploy-production.up.railway.app/api/v1/evaluations/history?limit={limit}"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        resp = urllib.request.urlopen(req, timeout=10, context=_CHAT_SSL_CTX)
+        data = json.loads(resp.read())
+        return {"evaluations": data.get("evaluations", [])}
+    except Exception as e:
+        log.warning("Failed to fetch from Chekk backend: %s", e)
+        return {"evaluations": []}
 
 
 @app.get("/api/manifest/{owner}/{repo}")
@@ -1179,6 +1206,20 @@ async def _run_evaluation(
 
     # Persist the completed evaluation before starting deploys
     save_evaluation(evaluation)
+
+    # Also persist to Chekk backend (PostgreSQL — survives Railway redeploys)
+    try:
+        persist_body = json.dumps(evaluation).encode()
+        persist_req = urllib.request.Request(
+            "https://chekk-deploy-production.up.railway.app/api/v1/evaluations/store",
+            data=persist_body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(persist_req, timeout=10, context=_CHAT_SSL_CTX)
+        log.info("Persisted eval %s to Chekk backend", eval_id)
+    except Exception as e:
+        log.warning("Failed to persist eval %s to Chekk backend: %s", eval_id, e)
 
     # Attach remediation if requested and there are failures
     if include_remediation and total_failed > 0:
