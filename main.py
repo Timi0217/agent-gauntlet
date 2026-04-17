@@ -477,7 +477,30 @@ def list_results(limit: int = 50):
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         resp = urllib.request.urlopen(req, timeout=10, context=_CHAT_SSL_CTX)
         data = json.loads(resp.read())
-        return {"evaluations": data.get("evaluations", [])}
+        # Normalize Chekk backend format to match what the frontend expects
+        normalized = []
+        for e in data.get("evaluations", []):
+            started_at = None
+            if e.get("created_at"):
+                try:
+                    from datetime import datetime as _dt
+                    dt = _dt.fromisoformat(e["created_at"].replace("Z", "+00:00"))
+                    started_at = dt.timestamp()
+                except Exception:
+                    pass
+            normalized.append({
+                "eval_id": e.get("eval_id", ""),
+                "agent_url": e.get("agent_url", ""),
+                "status": e.get("status", "completed"),
+                "overall_score": e.get("overall_score", 0),
+                "badge": e.get("badge", "none"),
+                "total_passed": e.get("total_passed", 0),
+                "total_failed": e.get("total_failed", 0),
+                "total_tests": e.get("total_tests", 0),
+                "duration_seconds": None,
+                "started_at": started_at,
+            })
+        return {"evaluations": normalized}
     except Exception as e:
         log.warning("Failed to fetch from Chekk backend: %s", e)
         return {"evaluations": []}
